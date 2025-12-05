@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
   workflow_dispatch:
     inputs:
       draft:
@@ -17,6 +24,11 @@ permissions:
 
 jobs:
   build:
+    # Run on: tag push, direct push to main, or merged PR to main
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     strategy:
       fail-fast: false
       matrix:
@@ -66,13 +78,35 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
+      - name: Get version from Cargo.toml
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected version: $VERSION"
+
+      - name: Determine release info
+        id: release_info
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "release_name=MCP Hub ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "is_draft=false" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=v${{ steps.get_version.outputs.version }}-build.${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "release_name=MCP Hub v${{ steps.get_version.outputs.version }} (Build ${{ github.run_number }})" >> $GITHUB_OUTPUT
+            echo "is_draft=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'MCP Hub ${{ github.ref_name }}'
+          tagName: ${{ steps.release_info.outputs.tag_name }}
+          releaseName: ${{ steps.release_info.outputs.release_name }}
           releaseBody: |
             ## What's New
 
@@ -91,6 +125,6 @@ jobs:
             **macOS**: Download the `.dmg` file, open it, and drag MCP Hub to your Applications folder.
 
             **Windows**: Download and run the `.msi` installer, or use the `.exe` for a portable installation.
-          releaseDraft: ${{ github.event.inputs.draft || true }}
+          releaseDraft: ${{ steps.release_info.outputs.is_draft == 'true' || github.event.inputs.draft == 'true' }}
           prerelease: false
           args: ${{ matrix.args }}
