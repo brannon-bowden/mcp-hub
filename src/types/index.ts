@@ -7,6 +7,8 @@ export interface McpServer {
   env: Record<string, string>;
   tags: string[];
   source?: ServerSource;
+  /** If set, this server is an instance of another server (the parent) */
+  parentId?: string;
   createdAt: string;
   updatedAt: string;
 }

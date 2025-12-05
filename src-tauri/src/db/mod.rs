@@ -42,8 +42,10 @@ impl Database {
                 tags TEXT,
                 source_type TEXT,
                 source_url TEXT,
+                parent_id TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (parent_id) REFERENCES servers(id) ON DELETE SET NULL
             );
 
             -- Client instances
@@ -100,6 +102,20 @@ impl Database {
             conn.execute("ALTER TABLE client_instances ADD COLUMN last_modified TEXT", [])?;
         }
 
+        // Migration: Add parent_id column to servers if it doesn't exist
+        let has_parent_id: bool = {
+            let mut stmt = conn.prepare("PRAGMA table_info(servers)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            columns.contains(&"parent_id".to_string())
+        };
+
+        if !has_parent_id {
+            conn.execute("ALTER TABLE servers ADD COLUMN parent_id TEXT REFERENCES servers(id) ON DELETE SET NULL", [])?;
+        }
+
         Ok(())
     }
 
@@ -123,8 +139,8 @@ impl Database {
         let source_url = server.source.as_ref().and_then(|s| s.url.clone());
 
         conn.execute(
-            "INSERT INTO servers (id, name, description, command, args, env, tags, source_type, source_url, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO servers (id, name, description, command, args, env, tags, source_type, source_url, parent_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 server.id,
                 server.name,
@@ -135,6 +151,7 @@ impl Database {
                 tags_json,
                 source_type,
                 source_url,
+                server.parent_id,
                 server.created_at.to_rfc3339(),
                 server.updated_at.to_rfc3339(),
             ],
@@ -147,7 +164,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, command, args, env, tags, source_type, source_url, created_at, updated_at
+            "SELECT id, name, description, command, args, env, tags, source_type, source_url, parent_id, created_at, updated_at
              FROM servers WHERE id = ?1",
         )?;
 
@@ -166,7 +183,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, command, args, env, tags, source_type, source_url, created_at, updated_at
+            "SELECT id, name, description, command, args, env, tags, source_type, source_url, parent_id, created_at, updated_at
              FROM servers ORDER BY name",
         )?;
 
@@ -199,7 +216,7 @@ impl Database {
 
         conn.execute(
             "UPDATE servers SET name = ?2, description = ?3, command = ?4, args = ?5, env = ?6,
-             tags = ?7, source_type = ?8, source_url = ?9, updated_at = ?10 WHERE id = ?1",
+             tags = ?7, source_type = ?8, source_url = ?9, parent_id = ?10, updated_at = ?11 WHERE id = ?1",
             params![
                 server.id,
                 server.name,
@@ -210,6 +227,7 @@ impl Database {
                 tags_json,
                 source_type,
                 source_url,
+                server.parent_id,
                 server.updated_at.to_rfc3339(),
             ],
         )?;
@@ -229,8 +247,9 @@ impl Database {
         let tags_str: Option<String> = row.get(6)?;
         let source_type: Option<String> = row.get(7)?;
         let source_url: Option<String> = row.get(8)?;
-        let created_at_str: String = row.get(9)?;
-        let updated_at_str: String = row.get(10)?;
+        let parent_id: Option<String> = row.get(9)?;
+        let created_at_str: String = row.get(10)?;
+        let updated_at_str: String = row.get(11)?;
 
         Ok(McpServer {
             id: row.get(0)?,
@@ -250,6 +269,7 @@ impl Database {
                 },
                 url: source_url,
             }),
+            parent_id,
             created_at: DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
