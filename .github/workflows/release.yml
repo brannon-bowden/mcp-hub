@@ -1,0 +1,96 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: 'Create as draft release'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS ARM64 (Apple Silicon)
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+
+          # macOS x86_64 (Intel)
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
+
+          # Windows x86_64
+          - platform: windows-latest
+            args: ''
+            rust_target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'MCP Hub ${{ github.ref_name }}'
+          releaseBody: |
+            ## What's New
+
+            See the commits for details on what changed in this release.
+
+            ## Downloads
+
+            | Platform | Download |
+            |----------|----------|
+            | macOS (Apple Silicon) | `.dmg` file for `aarch64` |
+            | macOS (Intel) | `.dmg` file for `x86_64` |
+            | Windows | `.msi` or `.exe` installer |
+
+            ## Installation
+
+            **macOS**: Download the `.dmg` file, open it, and drag MCP Hub to your Applications folder.
+
+            **Windows**: Download and run the `.msi` installer, or use the `.exe` for a portable installation.
+          releaseDraft: ${{ github.event.inputs.draft || true }}
+          prerelease: false
+          args: ${{ matrix.args }}
