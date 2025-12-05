@@ -1,5 +1,17 @@
-import { useEffect, useState } from "react";
-import { Moon, Sun, Monitor, FolderOpen, Save } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import {
+  Moon,
+  Sun,
+  Monitor,
+  FolderOpen,
+  Save,
+  Globe,
+  FileText,
+  RefreshCw,
+  ExternalLink,
+  CheckCircle2,
+  XCircle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,8 +24,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useStore } from "@/store";
-import type { AppSettings } from "@/types";
+import type { AppSettings, DiscoveryStatus, DiscoverySettings } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
+
+const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
+  mcpDirectoryEnabled: false,
+  httpServerEnabled: false,
+  httpServerPort: 24368,
+};
 
 export function Settings() {
   const { settings, loadSettings, saveSettings } = useStore();
@@ -21,14 +39,32 @@ export function Settings() {
   const [appDataDir, setAppDataDir] = useState<string>("");
   const [hasChanges, setHasChanges] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [discoveryStatus, setDiscoveryStatus] =
+    useState<DiscoveryStatus | null>(null);
+  const [refreshingDiscovery, setRefreshingDiscovery] = useState(false);
+
+  const loadDiscoveryStatus = useCallback(async () => {
+    try {
+      const status = await invoke<DiscoveryStatus>("get_discovery_status");
+      setDiscoveryStatus(status);
+    } catch (error) {
+      console.error("Failed to load discovery status:", error);
+    }
+  }, []);
 
   useEffect(() => {
     loadSettings();
     invoke<string>("get_app_data_dir").then(setAppDataDir).catch(console.error);
-  }, [loadSettings]);
+    loadDiscoveryStatus();
+  }, [loadSettings, loadDiscoveryStatus]);
 
   useEffect(() => {
-    setLocalSettings(settings);
+    // Ensure discovery settings have defaults
+    const settingsWithDefaults = {
+      ...settings,
+      discovery: settings.discovery || DEFAULT_DISCOVERY_SETTINGS,
+    };
+    setLocalSettings(settingsWithDefaults);
   }, [settings]);
 
   useEffect(() => {
@@ -41,11 +77,46 @@ export function Settings() {
       await saveSettings(localSettings);
       // Apply theme
       applyTheme(localSettings.theme);
+
+      // Update discovery settings if changed
+      const discoveryChanged =
+        JSON.stringify(localSettings.discovery) !==
+        JSON.stringify(settings.discovery);
+      if (discoveryChanged && localSettings.discovery) {
+        await invoke("update_discovery_settings", {
+          settings: localSettings.discovery,
+        });
+        await loadDiscoveryStatus();
+      }
     } catch (error) {
       console.error("Failed to save settings:", error);
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleRefreshDiscovery = async () => {
+    setRefreshingDiscovery(true);
+    try {
+      await invoke("refresh_discovery");
+      await loadDiscoveryStatus();
+    } catch (error) {
+      console.error("Failed to refresh discovery:", error);
+    } finally {
+      setRefreshingDiscovery(false);
+    }
+  };
+
+  const updateDiscoverySettings = (
+    updates: Partial<DiscoverySettings>
+  ) => {
+    setLocalSettings({
+      ...localSettings,
+      discovery: {
+        ...(localSettings.discovery || DEFAULT_DISCOVERY_SETTINGS),
+        ...updates,
+      },
+    });
   };
 
   const applyTheme = (theme: "light" | "dark" | "system") => {
@@ -195,6 +266,181 @@ export function Settings() {
                   setLocalSettings({ ...localSettings, autoStart: checked })
                 }
               />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* MCP Discovery */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>MCP Discovery</CardTitle>
+                <CardDescription>
+                  Allow other apps to discover your MCP servers
+                </CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRefreshDiscovery}
+                disabled={refreshingDiscovery}
+              >
+                <RefreshCw
+                  className={`w-4 h-4 mr-2 ${
+                    refreshingDiscovery ? "animate-spin" : ""
+                  }`}
+                />
+                Refresh
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* ~/.mcp Directory Discovery */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-muted rounded-lg">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <Label htmlFor="mcpDirectory">~/.mcp Directory</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Write server configs to ~/.mcp/ for local discovery
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  id="mcpDirectory"
+                  checked={localSettings.discovery?.mcpDirectoryEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    updateDiscoverySettings({ mcpDirectoryEnabled: checked })
+                  }
+                />
+              </div>
+              {discoveryStatus?.mcpDirectoryEnabled && (
+                <div className="ml-11 p-3 bg-muted/50 rounded-lg space-y-1">
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle2 className="w-4 h-4 text-green-500" />
+                    <span>
+                      {discoveryStatus.mcpDirectoryFileCount} server
+                      {discoveryStatus.mcpDirectoryFileCount !== 1 ? "s" : ""}{" "}
+                      published
+                    </span>
+                  </div>
+                  {discoveryStatus.mcpDirectoryPath && (
+                    <code className="text-xs text-muted-foreground block">
+                      {discoveryStatus.mcpDirectoryPath}
+                    </code>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t" />
+
+            {/* HTTP Server Discovery */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-muted rounded-lg">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <Label htmlFor="httpServer">HTTP Discovery Server</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Run a local server exposing /.well-known/mcp.json
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  id="httpServer"
+                  checked={localSettings.discovery?.httpServerEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    updateDiscoverySettings({ httpServerEnabled: checked })
+                  }
+                />
+              </div>
+
+              {(localSettings.discovery?.httpServerEnabled ||
+                discoveryStatus?.httpServerEnabled) && (
+                <div className="ml-11 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="httpPort" className="text-sm">
+                      Port:
+                    </Label>
+                    <Input
+                      id="httpPort"
+                      type="number"
+                      min="1024"
+                      max="65535"
+                      value={localSettings.discovery?.httpServerPort ?? 24368}
+                      onChange={(e) =>
+                        updateDiscoverySettings({
+                          httpServerPort: parseInt(e.target.value) || 24368,
+                        })
+                      }
+                      className="w-24"
+                    />
+                  </div>
+
+                  {discoveryStatus?.httpServerRunning && (
+                    <div className="p-3 bg-muted/50 rounded-lg space-y-2">
+                      <div className="flex items-center gap-2 text-sm">
+                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                        <span>Server running</span>
+                      </div>
+                      {discoveryStatus.httpServerUrl && (
+                        <a
+                          href={`${discoveryStatus.httpServerUrl}/.well-known/mcp.json`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-xs text-primary hover:underline"
+                        >
+                          {discoveryStatus.httpServerUrl}/.well-known/mcp.json
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
+
+                  {discoveryStatus?.httpServerEnabled &&
+                    !discoveryStatus?.httpServerRunning && (
+                      <div className="p-3 bg-destructive/10 rounded-lg">
+                        <div className="flex items-center gap-2 text-sm text-destructive">
+                          <XCircle className="w-4 h-4" />
+                          <span>Server not running</span>
+                        </div>
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t pt-4">
+              <p className="text-xs text-muted-foreground">
+                MCP Discovery allows other AI assistants and tools to find and
+                use the MCP servers you've configured. The ~/.mcp directory
+                follows the{" "}
+                <a
+                  href="https://github.com/jonnyzzz/mcp-local-spec"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  mcp-local-spec
+                </a>
+                , while the HTTP server implements{" "}
+                <a
+                  href="https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1649"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  SEP-1649
+                </a>
+                .
+              </p>
             </div>
           </CardContent>
         </Card>

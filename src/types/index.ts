@@ -75,11 +75,28 @@ export interface ConfigBackup {
   createdAt: string;
 }
 
+export interface DiscoverySettings {
+  mcpDirectoryEnabled: boolean;
+  httpServerEnabled: boolean;
+  httpServerPort: number;
+}
+
 export interface AppSettings {
   theme: "light" | "dark" | "system";
   autoStart: boolean;
   createBackups: boolean;
   backupRetentionDays: number;
+  discovery: DiscoverySettings;
+}
+
+export interface DiscoveryStatus {
+  mcpDirectoryEnabled: boolean;
+  mcpDirectoryPath?: string;
+  mcpDirectoryFileCount: number;
+  httpServerEnabled: boolean;
+  httpServerRunning: boolean;
+  httpServerPort: number;
+  httpServerUrl?: string;
 }
 
 export type HealthStatus = "healthy" | "error" | "unknown";
