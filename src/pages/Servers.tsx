@@ -5,6 +5,7 @@ import {
   Pencil,
   Trash2,
   Download,
+  Copy,
   Server as ServerIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -64,14 +65,58 @@ export function Servers() {
     loadServers();
   }, [loadServers]);
 
-  const filteredServers = servers.filter(
-    (server) =>
-      server.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      server.command.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      server.tags.some((tag) =>
-        tag.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-  );
+  // Filter servers based on search query
+  const matchesSearch = (server: McpServer) =>
+    server.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    server.command.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    server.tags.some((tag) =>
+      tag.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+  // Group servers: parent servers first, then their instances
+  const organizedServers = (() => {
+    // Get all servers that match the search (or their parent matches)
+    const filtered = servers.filter((server) => {
+      if (matchesSearch(server)) return true;
+      // Also include if parent matches
+      if (server.parentId) {
+        const parent = servers.find((s) => s.id === server.parentId);
+        if (parent && matchesSearch(parent)) return true;
+      }
+      // Also include if any child matches
+      const hasMatchingChild = servers.some(
+        (s) => s.parentId === server.id && matchesSearch(s)
+      );
+      return hasMatchingChild;
+    });
+
+    // Separate into parent servers (no parentId) and instances
+    const parentServers = filtered.filter((s) => !s.parentId);
+    const instances = filtered.filter((s) => s.parentId);
+
+    // Build ordered list: each parent followed by its instances
+    const ordered: McpServer[] = [];
+    for (const parent of parentServers) {
+      ordered.push(parent);
+      // Add all instances of this parent
+      const childInstances = instances.filter((s) => s.parentId === parent.id);
+      ordered.push(...childInstances);
+    }
+
+    // Add any orphaned instances (parent was deleted)
+    const orphanedInstances = instances.filter(
+      (s) => !parentServers.some((p) => p.id === s.parentId)
+    );
+    ordered.push(...orphanedInstances);
+
+    return ordered;
+  })();
+
+  // Helper to get parent name for display
+  const getParentName = (parentId: string) => {
+    const parent = servers.find((s) => s.id === parentId);
+    return parent?.name;
+  };
 
   const handleOpenDialog = (server?: McpServer) => {
     if (server) {
@@ -97,6 +142,7 @@ export function Servers() {
     setIsDialogOpen(false);
     setEditingServer(null);
     setFormData(emptyFormData);
+    setDuplicatingFromId(null);
   };
 
   const handleSubmit = async () => {
@@ -144,6 +190,7 @@ export function Servers() {
           env,
           tags,
           source: { sourceType: "manual" },
+          parentId: duplicatingFromId || undefined,
           createdAt: now,
           updatedAt: now,
         });
@@ -171,6 +218,29 @@ export function Servers() {
     setServerToDelete(server);
     setIsDeleteDialogOpen(true);
   };
+
+  const handleDuplicate = (server: McpServer) => {
+    // Pre-fill the form with the parent server's data but with a new name
+    const instanceNumber = servers.filter(
+      (s) => s.parentId === server.id || s.id === server.id
+    ).length;
+    setEditingServer(null);
+    setFormData({
+      name: `${server.name} (${instanceNumber + 1})`,
+      description: server.description || "",
+      command: server.command,
+      args: server.args.join("\n"),
+      env: Object.entries(server.env)
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n"),
+      tags: server.tags.join(", "),
+    });
+    // Store the parent ID for when we create
+    setDuplicatingFromId(server.id);
+    setIsDialogOpen(true);
+  };
+
+  const [duplicatingFromId, setDuplicatingFromId] = useState<string | null>(null);
 
   return (
     <div className="p-8">
@@ -207,7 +277,7 @@ export function Servers() {
       </div>
 
       {/* Server List */}
-      {filteredServers.length === 0 ? (
+      {organizedServers.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <ServerIcon className="w-12 h-12 text-muted-foreground mb-4" />
@@ -227,12 +297,29 @@ export function Servers() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredServers.map((server) => (
-            <Card key={server.id} className="relative group">
+          {organizedServers.map((server) => (
+            <Card
+              key={server.id}
+              className={`relative group ${
+                server.parentId ? "border-l-4 border-l-primary/30" : ""
+              }`}
+            >
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
                   <div>
-                    <CardTitle className="text-lg">{server.name}</CardTitle>
+                    <div className="flex items-center gap-2">
+                      <CardTitle className="text-lg">{server.name}</CardTitle>
+                      {server.parentId && (
+                        <Badge variant="outline" className="text-xs">
+                          instance
+                        </Badge>
+                      )}
+                    </div>
+                    {server.parentId && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        from {getParentName(server.parentId)}
+                      </p>
+                    )}
                     {server.description && (
                       <CardDescription className="mt-1">
                         {server.description}
@@ -244,6 +331,16 @@ export function Servers() {
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8"
+                      title="Create instance"
+                      onClick={() => handleDuplicate(server)}
+                    >
+                      <Copy className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      title="Edit"
                       onClick={() => handleOpenDialog(server)}
                     >
                       <Pencil className="w-4 h-4" />
@@ -252,6 +349,7 @@ export function Servers() {
                       variant="ghost"
                       size="icon"
                       className="h-8 w-8 text-destructive"
+                      title="Delete"
                       onClick={() => confirmDelete(server)}
                     >
                       <Trash2 className="w-4 h-4" />
@@ -292,11 +390,17 @@ export function Servers() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {editingServer ? "Edit Server" : "Add Server"}
+              {editingServer
+                ? "Edit Server"
+                : duplicatingFromId
+                ? "Create Server Instance"
+                : "Add Server"}
             </DialogTitle>
             <DialogDescription>
               {editingServer
                 ? "Update your MCP server configuration"
+                : duplicatingFromId
+                ? "Create a new instance with different configuration"
                 : "Configure a new MCP server"}
             </DialogDescription>
           </DialogHeader>

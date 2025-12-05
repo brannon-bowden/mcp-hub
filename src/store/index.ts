@@ -76,6 +76,11 @@ export const useStore = create<AppState>((set, get) => ({
     autoStart: false,
     createBackups: true,
     backupRetentionDays: 30,
+    discovery: {
+      mcpDirectoryEnabled: false,
+      httpServerEnabled: false,
+      httpServerPort: 24368,
+    },
   },
   settingsLoading: false,
 

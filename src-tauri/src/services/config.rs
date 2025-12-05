@@ -83,50 +83,42 @@ fn get_windsurf_config_path() -> Option<PathBuf> {
 }
 
 fn get_vscode_config_path() -> Option<PathBuf> {
-    // VS Code with Cline/Roo-Cline extension
+    // VS Code native MCP support (user-level config)
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir().map(|home| {
-            home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+            home.join("Library/Application Support/Code/User/mcp.json")
         })
     }
 
     #[cfg(target_os = "windows")]
     {
-        dirs::config_dir().map(|config| {
-            config.join("Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        })
+        dirs::config_dir().map(|config| config.join("Code/User/mcp.json"))
     }
 
     #[cfg(target_os = "linux")]
     {
-        dirs::config_dir().map(|config| {
-            config.join("Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        })
+        dirs::config_dir().map(|config| config.join("Code/User/mcp.json"))
     }
 }
 
 fn get_vscode_insiders_config_path() -> Option<PathBuf> {
-    // VS Code Insiders with Cline/Roo-Cline extension
+    // VS Code Insiders native MCP support (user-level config)
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir().map(|home| {
-            home.join("Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
+            home.join("Library/Application Support/Code - Insiders/User/mcp.json")
         })
     }
 
     #[cfg(target_os = "windows")]
     {
-        dirs::config_dir().map(|config| {
-            config.join("Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        })
+        dirs::config_dir().map(|config| config.join("Code - Insiders/User/mcp.json"))
     }
 
     #[cfg(target_os = "linux")]
     {
-        dirs::config_dir().map(|config| {
-            config.join("Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json")
-        })
+        dirs::config_dir().map(|config| config.join("Code - Insiders/User/mcp.json"))
     }
 }
 
@@ -308,27 +300,9 @@ fn get_antigravity_config_path() -> Option<PathBuf> {
 }
 
 fn get_jetbrains_config_path() -> Option<PathBuf> {
-    // JetBrains AI Assistant MCP config
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().map(|home| {
-            home.join("Library/Application Support/JetBrains/mcp.json")
-        })
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        dirs::config_dir().map(|config| {
-            config.join("JetBrains/mcp.json")
-        })
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        dirs::config_dir().map(|config| {
-            config.join("JetBrains/mcp.json")
-        })
-    }
+    // JetBrains IDEs with Junie use ~/.junie/mcp/mcp.json for global config
+    // Note: JetBrains AI Assistant configures MCP via IDE settings, not a file
+    dirs::home_dir().map(|home| home.join(".junie/mcp/mcp.json"))
 }
 
 fn get_gemini_cli_config_path() -> Option<PathBuf> {
@@ -352,8 +326,8 @@ fn get_openai_codex_config_path() -> Option<PathBuf> {
 }
 
 fn get_kiro_config_path() -> Option<PathBuf> {
-    // Kiro config path
-    dirs::home_dir().map(|home| home.join(".kiro/mcp.json"))
+    // Kiro uses ~/.kiro/settings/mcp.json
+    dirs::home_dir().map(|home| home.join(".kiro/settings/mcp.json"))
 }
 
 fn get_trae_config_path() -> Option<PathBuf> {
@@ -496,18 +470,9 @@ fn get_amazon_q_config_path() -> Option<PathBuf> {
 }
 
 fn get_warp_config_path() -> Option<PathBuf> {
-    // Warp terminal MCP config
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().map(|home| {
-            home.join(".warp/mcp.json")
-        })
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        dirs::home_dir().map(|home| home.join(".warp/mcp.json"))
-    }
+    // Warp terminal configures MCP via Warp Drive sync, not a local config file
+    // See: https://github.com/warpdotdev/Warp/issues/6602 for feature request
+    None
 }
 
 fn get_copilot_agent_config_path() -> Option<PathBuf> {
@@ -550,7 +515,7 @@ pub fn read_config_file(path: &PathBuf) -> Result<McpConfigFile, String> {
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse config file: {}", e))
 }
 
-/// Write MCP configuration to a file
+/// Write MCP configuration to a file (overwrites entire file)
 pub fn write_config_file(path: &PathBuf, config: &McpConfigFile) -> Result<(), String> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
@@ -558,6 +523,47 @@ pub fn write_config_file(path: &PathBuf, config: &McpConfigFile) -> Result<(), S
     }
 
     let content = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))
+}
+
+/// Write MCP servers to a config file, preserving other fields in the file
+/// This is used for config files like ~/.claude.json that contain other settings
+pub fn write_mcp_servers_preserving_config(
+    path: &PathBuf,
+    mcp_servers: &HashMap<String, McpServerEntry>,
+) -> Result<(), String> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+    }
+
+    // Read existing content or start with empty object
+    let mut existing: serde_json::Value = if path.exists() {
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        if content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to parse config file: {}", e))?
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure we have an object at the root
+    let obj = existing.as_object_mut()
+        .ok_or_else(|| "Config file is not a JSON object".to_string())?;
+
+    // Update only the mcpServers field
+    let servers_value = serde_json::to_value(mcp_servers)
+        .map_err(|e| format!("Failed to serialize MCP servers: {}", e))?;
+    obj.insert("mcpServers".to_string(), servers_value);
+
+    // Write back the merged config
+    let content = serde_json::to_string_pretty(&existing)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
     fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))
@@ -582,6 +588,18 @@ pub fn backup_config_file(path: &PathBuf, backup_dir: &PathBuf) -> Result<PathBu
     fs::copy(path, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
 
     Ok(backup_path)
+}
+
+/// Check if a client type uses a config file that contains other settings
+/// beyond just MCP servers (requiring merge-aware writes)
+fn client_requires_merge_write(client_type: &ClientType) -> bool {
+    matches!(
+        client_type,
+        ClientType::ClaudeCode
+            | ClientType::Zed           // settings.json with other Zed settings
+            | ClientType::Augment       // VS Code settings.json
+            | ClientType::GeminiCli     // settings.json with other Gemini settings
+    )
 }
 
 /// Convert servers to MCP config format and write to instance config file
@@ -616,8 +634,13 @@ pub fn sync_servers_to_instance(
         }
     }
 
-    let config = McpConfigFile { mcp_servers };
-    write_config_file(&config_path, &config)?;
+    // Use merge-aware write for clients that have other settings in their config file
+    if client_requires_merge_write(&instance.client_type) {
+        write_mcp_servers_preserving_config(&config_path, &mcp_servers)?;
+    } else {
+        let config = McpConfigFile { mcp_servers };
+        write_config_file(&config_path, &config)?;
+    }
 
     Ok(backup_path)
 }

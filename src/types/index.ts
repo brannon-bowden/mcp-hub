@@ -7,6 +7,8 @@ export interface McpServer {
   env: Record<string, string>;
   tags: string[];
   source?: ServerSource;
+  /** If set, this server is an instance of another server (the parent) */
+  parentId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,11 +77,28 @@ export interface ConfigBackup {
   createdAt: string;
 }
 
+export interface DiscoverySettings {
+  mcpDirectoryEnabled: boolean;
+  httpServerEnabled: boolean;
+  httpServerPort: number;
+}
+
 export interface AppSettings {
   theme: "light" | "dark" | "system";
   autoStart: boolean;
   createBackups: boolean;
   backupRetentionDays: number;
+  discovery: DiscoverySettings;
+}
+
+export interface DiscoveryStatus {
+  mcpDirectoryEnabled: boolean;
+  mcpDirectoryPath?: string;
+  mcpDirectoryFileCount: number;
+  httpServerEnabled: boolean;
+  httpServerRunning: boolean;
+  httpServerPort: number;
+  httpServerUrl?: string;
 }
 
 export type HealthStatus = "healthy" | "error" | "unknown";

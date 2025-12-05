@@ -17,6 +17,10 @@ pub struct McpServer {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ServerSource>,
+    /// If set, this server is an instance of another server (the parent).
+    /// Instances inherit the parent's command but can have different args/env.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -36,6 +40,7 @@ impl McpServer {
                 source_type: SourceType::Manual,
                 url: None,
             }),
+            parent_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -324,6 +329,9 @@ pub struct AppSettings {
     pub auto_start: bool,
     pub create_backups: bool,
     pub backup_retention_days: u32,
+    /// Discovery settings
+    #[serde(default)]
+    pub discovery: DiscoverySettings,
 }
 
 impl Default for AppSettings {
@@ -333,6 +341,29 @@ impl Default for AppSettings {
             auto_start: false,
             create_backups: true,
             backup_retention_days: 30,
+            discovery: DiscoverySettings::default(),
+        }
+    }
+}
+
+/// MCP Discovery settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverySettings {
+    /// Enable ~/.mcp/ directory discovery
+    pub mcp_directory_enabled: bool,
+    /// Enable local HTTP server discovery
+    pub http_server_enabled: bool,
+    /// Port for the local HTTP server (default: 24368)
+    pub http_server_port: u16,
+}
+
+impl Default for DiscoverySettings {
+    fn default() -> Self {
+        Self {
+            mcp_directory_enabled: false,
+            http_server_enabled: false,
+            http_server_port: 24368,
         }
     }
 }
