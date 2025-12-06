@@ -164,14 +164,15 @@ export const useStore = create<AppState>((set, get) => ({
     enabled: boolean
   ) => {
     await invoke("set_server_enabled", { instanceId, serverId, enabled });
-    // Update local state
+    // Update local state including lastModified to trigger "needs sync" status
+    const now = new Date().toISOString();
     set({
       instances: get().instances.map((instance) => {
         if (instance.id !== instanceId) return instance;
         const enabledServers = enabled
           ? [...instance.enabledServers, serverId]
           : instance.enabledServers.filter((id) => id !== serverId);
-        return { ...instance, enabledServers };
+        return { ...instance, enabledServers, lastModified: now };
       }),
     });
   },
