@@ -332,6 +332,9 @@ pub struct AppSettings {
     /// Discovery settings
     #[serde(default)]
     pub discovery: DiscoverySettings,
+    /// Proxy settings
+    #[serde(default)]
+    pub proxy: ProxySettings,
 }
 
 impl Default for AppSettings {
@@ -342,6 +345,7 @@ impl Default for AppSettings {
             create_backups: true,
             backup_retention_days: 30,
             discovery: DiscoverySettings::default(),
+            proxy: ProxySettings::default(),
         }
     }
 }
@@ -364,6 +368,28 @@ impl Default for DiscoverySettings {
             mcp_directory_enabled: false,
             http_server_enabled: false,
             http_server_port: 24368,
+        }
+    }
+}
+
+/// MCP Proxy settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxySettings {
+    /// Enable the MCP proxy server
+    pub enabled: bool,
+    /// Port for the proxy server (default: 24369)
+    pub port: u16,
+    /// Auto-start proxy on app launch
+    pub auto_start: bool,
+}
+
+impl Default for ProxySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: 24369,
+            auto_start: false,
         }
     }
 }

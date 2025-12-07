@@ -83,12 +83,25 @@ export interface DiscoverySettings {
   httpServerPort: number;
 }
 
+export interface ProxySettings {
+  enabled: boolean;
+  port: number;
+  autoStart: boolean;
+}
+
 export interface AppSettings {
   theme: "light" | "dark" | "system";
   autoStart: boolean;
   createBackups: boolean;
   backupRetentionDays: number;
   discovery: DiscoverySettings;
+  proxy: ProxySettings;
+}
+
+export interface ProxyStatus {
+  running: boolean;
+  port?: number;
+  instanceCount: number;
 }
 
 export interface DiscoveryStatus {

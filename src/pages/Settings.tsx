@@ -11,6 +11,10 @@ import {
   ExternalLink,
   CheckCircle2,
   XCircle,
+  Network,
+  Play,
+  Square,
+  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +28,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useStore } from "@/store";
-import type { AppSettings, DiscoveryStatus, DiscoverySettings } from "@/types";
+import type { AppSettings, DiscoveryStatus, DiscoverySettings, ProxySettings, ProxyStatus } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
@@ -33,8 +37,14 @@ const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
   httpServerPort: 24368,
 };
 
+const DEFAULT_PROXY_SETTINGS: ProxySettings = {
+  enabled: false,
+  port: 24369,
+  autoStart: false,
+};
+
 export function Settings() {
-  const { settings, loadSettings, saveSettings } = useStore();
+  const { settings, loadSettings, saveSettings, startProxyServer, stopProxyServer, getProxyStatus } = useStore();
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
   const [appDataDir, setAppDataDir] = useState<string>("");
   const [hasChanges, setHasChanges] = useState(false);
@@ -42,6 +52,8 @@ export function Settings() {
   const [discoveryStatus, setDiscoveryStatus] =
     useState<DiscoveryStatus | null>(null);
   const [refreshingDiscovery, setRefreshingDiscovery] = useState(false);
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+  const [proxyLoading, setProxyLoading] = useState(false);
 
   const loadDiscoveryStatus = useCallback(async () => {
     try {
@@ -52,17 +64,28 @@ export function Settings() {
     }
   }, []);
 
+  const loadProxyStatus = useCallback(async () => {
+    try {
+      const status = await getProxyStatus();
+      setProxyStatus(status);
+    } catch (error) {
+      console.error("Failed to load proxy status:", error);
+    }
+  }, [getProxyStatus]);
+
   useEffect(() => {
     loadSettings();
     invoke<string>("get_app_data_dir").then(setAppDataDir).catch(console.error);
     loadDiscoveryStatus();
-  }, [loadSettings, loadDiscoveryStatus]);
+    loadProxyStatus();
+  }, [loadSettings, loadDiscoveryStatus, loadProxyStatus]);
 
   useEffect(() => {
-    // Ensure discovery settings have defaults
+    // Ensure settings have defaults
     const settingsWithDefaults = {
       ...settings,
       discovery: settings.discovery || DEFAULT_DISCOVERY_SETTINGS,
+      proxy: settings.proxy || DEFAULT_PROXY_SETTINGS,
     };
     setLocalSettings(settingsWithDefaults);
   }, [settings]);
@@ -117,6 +140,45 @@ export function Settings() {
         ...updates,
       },
     });
+  };
+
+  const updateProxySettings = (updates: Partial<ProxySettings>) => {
+    setLocalSettings({
+      ...localSettings,
+      proxy: {
+        ...(localSettings.proxy || DEFAULT_PROXY_SETTINGS),
+        ...updates,
+      },
+    });
+  };
+
+  const handleStartProxy = async () => {
+    setProxyLoading(true);
+    try {
+      const port = localSettings.proxy?.port || 24369;
+      await startProxyServer(port);
+      await loadProxyStatus();
+    } catch (error) {
+      console.error("Failed to start proxy:", error);
+    } finally {
+      setProxyLoading(false);
+    }
+  };
+
+  const handleStopProxy = async () => {
+    setProxyLoading(true);
+    try {
+      await stopProxyServer();
+      await loadProxyStatus();
+    } catch (error) {
+      console.error("Failed to stop proxy:", error);
+    } finally {
+      setProxyLoading(false);
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
   };
 
   const applyTheme = (theme: "light" | "dark" | "system") => {
@@ -441,6 +503,136 @@ export function Settings() {
                 </a>
                 .
               </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* MCP Proxy */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  MCP Proxy
+                  <span className="text-xs font-normal bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200 px-2 py-0.5 rounded">
+                    Beta
+                  </span>
+                </CardTitle>
+                <CardDescription>
+                  Run a proxy server that aggregates all your MCP servers
+                </CardDescription>
+              </div>
+              {proxyStatus?.running ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleStopProxy}
+                  disabled={proxyLoading}
+                >
+                  <Square className={`w-4 h-4 mr-2 ${proxyLoading ? "animate-pulse" : ""}`} />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleStartProxy}
+                  disabled={proxyLoading}
+                >
+                  <Play className={`w-4 h-4 mr-2 ${proxyLoading ? "animate-pulse" : ""}`} />
+                  Start
+                </Button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-muted rounded-lg">
+                <Network className="w-4 h-4" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm">
+                  Connect clients to a single endpoint instead of configuring each server individually.
+                  Tools are namespaced (e.g., <code className="text-xs bg-muted px-1 rounded">filesystem__read_file</code>).
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label htmlFor="proxyPort" className="text-sm">
+                Port:
+              </Label>
+              <Input
+                id="proxyPort"
+                type="number"
+                min="1024"
+                max="65535"
+                value={localSettings.proxy?.port ?? 24369}
+                onChange={(e) =>
+                  updateProxySettings({
+                    port: parseInt(e.target.value) || 24369,
+                  })
+                }
+                className="w-24"
+                disabled={proxyStatus?.running}
+              />
+            </div>
+
+            {proxyStatus?.running && (
+              <div className="p-3 bg-muted/50 rounded-lg space-y-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="w-4 h-4 text-green-500" />
+                  <span>Proxy server running</span>
+                  {proxyStatus.instanceCount > 0 && (
+                    <span className="text-muted-foreground">
+                      ({proxyStatus.instanceCount} instance{proxyStatus.instanceCount !== 1 ? "s" : ""} registered)
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Configure your MCP client to connect to:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="text-xs bg-background px-2 py-1 rounded border flex-1">
+                      http://localhost:{proxyStatus.port || localSettings.proxy?.port}/mcp/{"<instance-id>"}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => copyToClipboard(`http://localhost:${proxyStatus.port || localSettings.proxy?.port}/mcp/`)}
+                    >
+                      <Copy className="w-3 h-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!proxyStatus?.running && (
+              <div className="p-3 bg-muted/30 rounded-lg">
+                <p className="text-sm text-muted-foreground">
+                  Start the proxy to enable single-endpoint access to your MCP servers.
+                  Each client instance will get its own endpoint URL.
+                </p>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2">
+              <div>
+                <Label htmlFor="proxyAutoStart">Auto-start Proxy</Label>
+                <p className="text-xs text-muted-foreground">
+                  Start the proxy server when MCP Hub launches
+                </p>
+              </div>
+              <Switch
+                id="proxyAutoStart"
+                checked={localSettings.proxy?.autoStart ?? false}
+                onCheckedChange={(checked) =>
+                  updateProxySettings({ autoStart: checked })
+                }
+              />
             </div>
           </CardContent>
         </Card>
