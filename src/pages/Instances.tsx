@@ -11,6 +11,8 @@ import {
   Download,
   AlertCircle,
   Search,
+  Network,
+  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +36,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useStore } from "@/store";
-import { CLIENT_TYPE_LABELS, type ClientInstance, type ClientType, type McpServerEntry } from "@/types";
+import { CLIENT_TYPE_LABELS, type ClientInstance, type ClientType, type McpServerEntry, type ProxyStatus } from "@/types";
 
 interface InstanceFormData {
   name: string;
@@ -54,6 +56,7 @@ export function Instances() {
   const {
     servers,
     instances,
+    settings,
     loadServers,
     loadInstances,
     createInstance,
@@ -65,6 +68,8 @@ export function Instances() {
     detectedClients,
     readConfigFile,
     importFromFile,
+    getProxyStatus,
+    registerProxyInstance,
   } = useStore();
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -83,12 +88,54 @@ export function Instances() {
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const [clientTypeSearch, setClientTypeSearch] = useState("");
+  const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
+  const [proxyUrls, setProxyUrls] = useState<Record<string, string>>({});
+
+  const loadProxyStatus = useCallback(async () => {
+    try {
+      const status = await getProxyStatus();
+      setProxyStatus(status);
+    } catch (error) {
+      console.error("Failed to get proxy status:", error);
+    }
+  }, [getProxyStatus]);
+
+  const registerInstanceForProxy = useCallback(async (instanceId: string) => {
+    if (!proxyStatus?.running) return;
+    try {
+      const proxyId = await registerProxyInstance(instanceId);
+      const url = `http://localhost:${proxyStatus.port || settings.proxy.port}/mcp/${proxyId}`;
+      setProxyUrls(prev => ({ ...prev, [instanceId]: url }));
+    } catch (error) {
+      console.error("Failed to register instance for proxy:", error);
+    }
+  }, [proxyStatus, registerProxyInstance, settings.proxy.port]);
+
+  const copyToClipboard = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error);
+    }
+  }, []);
 
   useEffect(() => {
     loadServers();
     loadInstances();
     detectClients();
-  }, [loadServers, loadInstances, detectClients]);
+    loadProxyStatus();
+  }, [loadServers, loadInstances, detectClients, loadProxyStatus]);
+
+  // Register instances for proxy when proxy is running
+  useEffect(() => {
+    if (proxyStatus?.running && instances.length > 0) {
+      instances.forEach(instance => {
+        if (!proxyUrls[instance.id]) {
+          registerInstanceForProxy(instance.id);
+        }
+      });
+    }
+  }, [proxyStatus?.running, instances, proxyUrls, registerInstanceForProxy]);
 
   // Helper to determine if an instance needs to be synced
   const needsSync = (instance: ClientInstance): boolean => {
@@ -410,6 +457,23 @@ export function Instances() {
                       <FolderOpen className="w-4 h-4" />
                       <code className="text-xs">{instance.configPath}</code>
                     </div>
+                    {proxyStatus?.running && proxyUrls[instance.id] && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Network className="w-4 h-4 text-blue-500" />
+                        <code className="text-xs bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded text-blue-700 dark:text-blue-300">
+                          {proxyUrls[instance.id]}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => copyToClipboard(proxyUrls[instance.id])}
+                          title="Copy proxy URL"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
                     <div className="flex items-center gap-4 text-sm">
                       <span className="flex items-center gap-1">
                         <CheckCircle className="w-4 h-4 text-green-500" />
