@@ -7,6 +7,7 @@ import type {
   DetectedClient,
   RegistrySource,
   RegistryServer,
+  ProxyStatus,
 } from "@/types";
 
 interface AppState {
@@ -59,6 +60,14 @@ interface AppState {
 
   // Config reading
   readConfigFile: (path: string) => Promise<{ mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> } | null>;
+
+  // Proxy
+  startProxyServer: (port: number) => Promise<void>;
+  stopProxyServer: () => Promise<void>;
+  getProxyStatus: () => Promise<ProxyStatus>;
+  registerProxyInstance: (instanceId: string) => Promise<string>;
+  startProxyInstance: (instanceId: string) => Promise<void>;
+  stopProxyInstance: (instanceId: string) => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -80,6 +89,11 @@ export const useStore = create<AppState>((set, get) => ({
       mcpDirectoryEnabled: false,
       httpServerEnabled: false,
       httpServerPort: 24368,
+    },
+    proxy: {
+      enabled: false,
+      port: 24369,
+      autoStart: false,
     },
   },
   settingsLoading: false,
@@ -164,14 +178,15 @@ export const useStore = create<AppState>((set, get) => ({
     enabled: boolean
   ) => {
     await invoke("set_server_enabled", { instanceId, serverId, enabled });
-    // Update local state
+    // Update local state including lastModified to trigger "needs sync" status
+    const now = new Date().toISOString();
     set({
       instances: get().instances.map((instance) => {
         if (instance.id !== instanceId) return instance;
         const enabledServers = enabled
           ? [...instance.enabledServers, serverId]
           : instance.enabledServers.filter((id) => id !== serverId);
-        return { ...instance, enabledServers };
+        return { ...instance, enabledServers, lastModified: now };
       }),
     });
   },
@@ -243,5 +258,30 @@ export const useStore = create<AppState>((set, get) => ({
     } catch {
       return null;
     }
+  },
+
+  // Proxy actions
+  startProxyServer: async (port: number) => {
+    await invoke("start_proxy_server", { port });
+  },
+
+  stopProxyServer: async () => {
+    await invoke("stop_proxy_server");
+  },
+
+  getProxyStatus: async () => {
+    return await invoke<ProxyStatus>("get_proxy_status");
+  },
+
+  registerProxyInstance: async (instanceId: string) => {
+    return await invoke<string>("register_proxy_instance", { instanceId });
+  },
+
+  startProxyInstance: async (instanceId: string) => {
+    await invoke("start_proxy_instance", { instanceId });
+  },
+
+  stopProxyInstance: async (instanceId: string) => {
+    await invoke("stop_proxy_instance", { instanceId });
   },
 }));
