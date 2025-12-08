@@ -135,6 +135,24 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
     // Get all servers
     let servers = db.get_all_servers().map_err(|e| e.to_string())?;
 
+    // Get app settings for proxy configuration
+    let settings: AppSettings = db
+        .get_setting("app_settings")
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default();
+
+    // Build proxy options if the instance uses proxy mode
+    let proxy_options = if instance.use_proxy {
+        Some(config::ProxySyncOptions {
+            proxy_port: settings.proxy.port,
+            stdio_path: settings.proxy.stdio_path.clone(),
+        })
+    } else {
+        None
+    };
+
     // Get backup directory
     let backup_dir = config::get_backup_dir();
 
@@ -143,6 +161,7 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
         &instance,
         &servers,
         backup_dir.as_ref(),
+        proxy_options.as_ref(),
     )?;
 
     // Record backup if created

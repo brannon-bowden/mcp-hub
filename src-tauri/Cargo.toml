@@ -9,6 +9,10 @@ edition = "2021"
 name = "mcp_hub_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "mcp-hub-stdio"
+path = "src/bin/mcp-hub-stdio.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -33,3 +37,5 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 futures = "0.3"
 async-stream = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4", features = ["derive"] }

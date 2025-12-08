@@ -495,6 +495,81 @@ pub fn config_exists(path: &PathBuf) -> bool {
     path.exists() && path.is_file()
 }
 
+/// Get the path to the bundled mcp-hub-stdio binary.
+/// This binary is bundled with the app and located relative to the main executable.
+pub fn get_stdio_binary_path() -> Option<PathBuf> {
+    // Get the path to the current executable
+    let exe_path = std::env::current_exe().ok()?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, the app structure is:
+        // MCP Hub.app/Contents/MacOS/mcp-hub (main executable)
+        // MCP Hub.app/Contents/MacOS/mcp-hub-stdio (sidecar binary)
+        let exe_dir = exe_path.parent()?;
+        let stdio_path = exe_dir.join("mcp-hub-stdio");
+        if stdio_path.exists() {
+            return Some(stdio_path);
+        }
+        // Also check for development builds
+        if let Some(target_dir) = exe_dir.parent() {
+            let dev_path = target_dir.join("release").join("mcp-hub-stdio");
+            if dev_path.exists() {
+                return Some(dev_path);
+            }
+            let debug_path = target_dir.join("debug").join("mcp-hub-stdio");
+            if debug_path.exists() {
+                return Some(debug_path);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, the binary is in the same directory as the main executable
+        let exe_dir = exe_path.parent()?;
+        let stdio_path = exe_dir.join("mcp-hub-stdio.exe");
+        if stdio_path.exists() {
+            return Some(stdio_path);
+        }
+        // Also check for development builds
+        if let Some(target_dir) = exe_dir.parent() {
+            let dev_path = target_dir.join("release").join("mcp-hub-stdio.exe");
+            if dev_path.exists() {
+                return Some(dev_path);
+            }
+            let debug_path = target_dir.join("debug").join("mcp-hub-stdio.exe");
+            if debug_path.exists() {
+                return Some(debug_path);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, the binary is in the same directory as the main executable
+        let exe_dir = exe_path.parent()?;
+        let stdio_path = exe_dir.join("mcp-hub-stdio");
+        if stdio_path.exists() {
+            return Some(stdio_path);
+        }
+        // Also check for development builds
+        if let Some(target_dir) = exe_dir.parent() {
+            let dev_path = target_dir.join("release").join("mcp-hub-stdio");
+            if dev_path.exists() {
+                return Some(dev_path);
+            }
+            let debug_path = target_dir.join("debug").join("mcp-hub-stdio");
+            if debug_path.exists() {
+                return Some(debug_path);
+            }
+        }
+        None
+    }
+}
+
 /// Read and parse an MCP configuration file
 pub fn read_config_file(path: &PathBuf) -> Result<McpConfigFile, String> {
     if !config_exists(path) {
@@ -602,11 +677,22 @@ fn client_requires_merge_write(client_type: &ClientType) -> bool {
     )
 }
 
-/// Convert servers to MCP config format and write to instance config file
+/// Options for proxy mode sync
+pub struct ProxySyncOptions {
+    /// Port the proxy server is running on
+    pub proxy_port: u16,
+    /// Path to the mcp-hub-stdio binary (if None, will be auto-detected)
+    pub stdio_path: Option<String>,
+}
+
+/// Convert servers to MCP config format and write to instance config file.
+/// If `instance.use_proxy` is true and `proxy_options` is provided, writes only
+/// the mcp-hub-stdio bridge entry instead of individual servers.
 pub fn sync_servers_to_instance(
     instance: &ClientInstance,
     servers: &[McpServer],
     backup_dir: Option<&PathBuf>,
+    proxy_options: Option<&ProxySyncOptions>,
 ) -> Result<Option<PathBuf>, String> {
     let config_path = PathBuf::from(&instance.config_path);
     let mut backup_path = None;
@@ -621,16 +707,40 @@ pub fn sync_servers_to_instance(
     // Build the MCP servers map
     let mut mcp_servers = HashMap::new();
 
-    for server in servers {
-        if instance.enabled_servers.contains(&server.id) {
+    // Check if we should use proxy mode
+    if instance.use_proxy {
+        if let Some(opts) = proxy_options {
+            // Get the stdio binary path
+            let stdio_path = opts.stdio_path.clone()
+                .or_else(|| get_stdio_binary_path().map(|p| p.to_string_lossy().to_string()))
+                .ok_or_else(|| "Could not find mcp-hub-stdio binary. Please ensure it is installed.".to_string())?;
+
+            // Build the proxy URL for this instance
+            let proxy_url = format!("http://localhost:{}/mcp/{}", opts.proxy_port, instance.id);
+
+            // Create a single entry for the proxy bridge
             let entry = McpServerEntry {
-                command: server.command.clone(),
-                args: server.args.clone(),
-                env: server.env.clone(),
+                command: stdio_path,
+                args: vec!["--url".to_string(), proxy_url],
+                env: HashMap::new(),
             };
-            // Use server name as the key (sanitized)
-            let key = sanitize_server_name(&server.name);
-            mcp_servers.insert(key, entry);
+            mcp_servers.insert("mcp-hub".to_string(), entry);
+        } else {
+            return Err("Proxy mode is enabled but proxy options were not provided. Is the proxy server running?".to_string());
+        }
+    } else {
+        // Standard mode: sync all enabled servers individually
+        for server in servers {
+            if instance.enabled_servers.contains(&server.id) {
+                let entry = McpServerEntry {
+                    command: server.command.clone(),
+                    args: server.args.clone(),
+                    env: server.env.clone(),
+                };
+                // Use server name as the key (sanitized)
+                let key = sanitize_server_name(&server.name);
+                mcp_servers.insert(key, entry);
+            }
         }
     }
 

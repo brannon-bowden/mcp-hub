@@ -250,6 +250,9 @@ pub struct ClientInstance {
     pub config_path: String,
     pub enabled_servers: Vec<String>,
     pub is_default: bool,
+    /// If true, sync will write only the mcp-hub-stdio bridge instead of individual servers
+    #[serde(default)]
+    pub use_proxy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_synced: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -267,6 +270,7 @@ impl ClientInstance {
             config_path,
             enabled_servers: Vec::new(),
             is_default: false,
+            use_proxy: false,
             last_synced: None,
             last_modified: None,
             created_at: Utc::now(),
@@ -382,6 +386,9 @@ pub struct ProxySettings {
     pub port: u16,
     /// Auto-start proxy on app launch
     pub auto_start: bool,
+    /// Path to the mcp-hub-stdio binary for stdio bridge mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdio_path: Option<String>,
 }
 
 impl Default for ProxySettings {
@@ -390,6 +397,7 @@ impl Default for ProxySettings {
             enabled: false,
             port: 24369,
             auto_start: false,
+            stdio_path: None,
         }
     }
 }
