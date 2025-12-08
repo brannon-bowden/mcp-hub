@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "MCP Server Manager - Centralized management for Model Context Protocol servers"
 authors = ["MCP Hub Team"]
 edition = "2021"
+default-run = "mcp-hub-stdio"
 
 [lib]
 name = "mcp_hub_lib"
