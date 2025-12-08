@@ -245,3 +245,10 @@ export interface RegistryServer {
   repository?: string;
   homepage?: string;
 }
+
+// Log types
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+}
