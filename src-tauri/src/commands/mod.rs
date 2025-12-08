@@ -147,7 +147,7 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
     let proxy_options = if instance.use_proxy {
         Some(config::ProxySyncOptions {
             proxy_port: settings.proxy.port,
-            stdio_path: settings.proxy.stdio_path.clone(),
+            stdio_script_path: settings.proxy.stdio_script_path.clone(),
         })
     } else {
         None
