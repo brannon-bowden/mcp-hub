@@ -116,6 +116,20 @@ impl Database {
             conn.execute("ALTER TABLE servers ADD COLUMN parent_id TEXT REFERENCES servers(id) ON DELETE SET NULL", [])?;
         }
 
+        // Migration: Add use_proxy column to client_instances if it doesn't exist
+        let has_use_proxy: bool = {
+            let mut stmt = conn.prepare("PRAGMA table_info(client_instances)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            columns.contains(&"use_proxy".to_string())
+        };
+
+        if !has_use_proxy {
+            conn.execute("ALTER TABLE client_instances ADD COLUMN use_proxy INTEGER DEFAULT 0", [])?;
+        }
+
         Ok(())
     }
 
@@ -285,14 +299,15 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO client_instances (id, name, client_type, config_path, is_default, last_synced, last_modified, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO client_instances (id, name, client_type, config_path, is_default, use_proxy, last_synced, last_modified, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 instance.id,
                 instance.name,
                 instance.client_type.as_str(),
                 instance.config_path,
                 instance.is_default as i32,
+                instance.use_proxy as i32,
                 instance.last_synced.map(|dt| dt.to_rfc3339()),
                 instance.last_modified.map(|dt| dt.to_rfc3339()),
                 instance.created_at.to_rfc3339(),
@@ -306,7 +321,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, client_type, config_path, is_default, last_synced, last_modified, created_at
+            "SELECT id, name, client_type, config_path, is_default, use_proxy, last_synced, last_modified, created_at
              FROM client_instances WHERE id = ?1",
         )?;
 
@@ -323,7 +338,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, client_type, config_path, is_default, last_synced, last_modified, created_at
+            "SELECT id, name, client_type, config_path, is_default, use_proxy, last_synced, last_modified, created_at
              FROM client_instances ORDER BY name",
         )?;
 
@@ -352,13 +367,14 @@ impl Database {
 
         conn.execute(
             "UPDATE client_instances SET name = ?2, client_type = ?3, config_path = ?4,
-             is_default = ?5, last_synced = ?6, last_modified = ?7 WHERE id = ?1",
+             is_default = ?5, use_proxy = ?6, last_synced = ?7, last_modified = ?8 WHERE id = ?1",
             params![
                 instance.id,
                 instance.name,
                 instance.client_type.as_str(),
                 instance.config_path,
                 instance.is_default as i32,
+                instance.use_proxy as i32,
                 instance.last_synced.map(|dt| dt.to_rfc3339()),
                 instance.last_modified.map(|dt| dt.to_rfc3339()),
             ],
@@ -376,9 +392,10 @@ impl Database {
     fn row_to_instance(&self, row: &rusqlite::Row) -> SqlResult<ClientInstance> {
         let client_type_str: String = row.get(2)?;
         let is_default: i32 = row.get(4)?;
-        let last_synced_str: Option<String> = row.get(5)?;
-        let last_modified_str: Option<String> = row.get(6)?;
-        let created_at_str: String = row.get(7)?;
+        let use_proxy: i32 = row.get(5)?;
+        let last_synced_str: Option<String> = row.get(6)?;
+        let last_modified_str: Option<String> = row.get(7)?;
+        let created_at_str: String = row.get(8)?;
 
         Ok(ClientInstance {
             id: row.get(0)?,
@@ -387,6 +404,7 @@ impl Database {
             config_path: row.get(3)?,
             enabled_servers: Vec::new(), // Loaded separately
             is_default: is_default != 0,
+            use_proxy: use_proxy != 0,
             last_synced: last_synced_str.and_then(|s| {
                 DateTime::parse_from_rfc3339(&s)
                     .map(|dt| dt.with_timezone(&Utc))

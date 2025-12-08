@@ -239,6 +239,7 @@ export function Instances() {
           configPath: formData.configPath,
           enabledServers: [],
           isDefault: formData.isDefault,
+          useProxy: false,
           createdAt: now,
         });
       }
@@ -474,12 +475,18 @@ export function Instances() {
                         </Button>
                       </div>
                     )}
-                    <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-4 text-sm flex-wrap">
                       <span className="flex items-center gap-1">
                         <CheckCircle className="w-4 h-4 text-green-500" />
                         {instance.enabledServers.length} server
                         {instance.enabledServers.length === 1 ? "" : "s"} enabled
                       </span>
+                      {instance.useProxy && (
+                        <Badge variant="outline" className="text-xs gap-1">
+                          <Network className="w-3 h-3" />
+                          Proxy
+                        </Badge>
+                      )}
                       {instance.lastSynced && (
                         <span className="flex items-center gap-1 text-muted-foreground">
                           <Clock className="w-4 h-4" />
@@ -688,47 +695,83 @@ export function Instances() {
               Select which servers to enable for {selectedInstance?.name}
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4 max-h-96 overflow-auto">
-            {servers.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">
-                No servers configured. Add some servers first.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {servers.map((server) => {
-                  const isEnabled =
-                    selectedInstance?.enabledServers.includes(server.id) ??
-                    false;
-                  return (
-                    <div
-                      key={server.id}
-                      className="flex items-center justify-between p-3 rounded-lg border"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Checkbox
-                          id={server.id}
-                          checked={isEnabled}
-                          onCheckedChange={(checked) =>
-                            handleServerToggle(server.id, checked === true)
-                          }
-                        />
-                        <div>
-                          <label
-                            htmlFor={server.id}
-                            className="font-medium cursor-pointer"
-                          >
-                            {server.name}
-                          </label>
-                          <p className="text-xs text-muted-foreground">
-                            {server.command} {server.args.join(" ")}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+          <div className="py-4 space-y-4">
+            {/* Use Proxy Toggle */}
+            {proxyStatus?.running && (
+              <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+                <div className="flex items-center gap-3">
+                  <Network className="w-5 h-5 text-primary" />
+                  <div>
+                    <Label htmlFor="useProxy" className="font-medium cursor-pointer">
+                      Use MCP Hub Proxy
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Sync a single proxy connection instead of individual servers
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  id="useProxy"
+                  checked={selectedInstance?.useProxy ?? false}
+                  onCheckedChange={async (checked) => {
+                    if (selectedInstance) {
+                      const updated = { ...selectedInstance, useProxy: checked };
+                      await updateInstance(updated);
+                      setSelectedInstance(updated);
+                    }
+                  }}
+                />
               </div>
             )}
+
+            {/* Server List */}
+            <div className="max-h-80 overflow-auto">
+              {servers.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">
+                  No servers configured. Add some servers first.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {selectedInstance?.useProxy && (
+                    <p className="text-sm text-muted-foreground p-3 bg-muted/50 rounded-lg">
+                      Proxy mode enabled. When synced, this instance will use a single <code className="bg-muted px-1 rounded">mcp-hub</code> server entry that connects to the proxy. The servers below determine what's available through the proxy.
+                    </p>
+                  )}
+                  {servers.map((server) => {
+                    const isEnabled =
+                      selectedInstance?.enabledServers.includes(server.id) ??
+                      false;
+                    return (
+                      <div
+                        key={server.id}
+                        className="flex items-center justify-between p-3 rounded-lg border"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Checkbox
+                            id={server.id}
+                            checked={isEnabled}
+                            onCheckedChange={(checked) =>
+                              handleServerToggle(server.id, checked === true)
+                            }
+                          />
+                          <div>
+                            <label
+                              htmlFor={server.id}
+                              className="font-medium cursor-pointer"
+                            >
+                              {server.name}
+                            </label>
+                            <p className="text-xs text-muted-foreground">
+                              {server.command} {server.args.join(" ")}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button onClick={() => setIsServersDialogOpen(false)}>Done</Button>

@@ -65,6 +65,8 @@ export interface ClientInstance {
   configPath: string;
   enabledServers: string[];
   isDefault: boolean;
+  /** If true, sync will write only the mcp-hub-stdio bridge instead of individual servers */
+  useProxy: boolean;
   lastSynced?: string;
   lastModified?: string;
   createdAt: string;
@@ -87,6 +89,8 @@ export interface ProxySettings {
   enabled: boolean;
   port: number;
   autoStart: boolean;
+  /** Path to the mcp-hub-stdio binary (auto-detected if not set) */
+  stdioPath?: string;
 }
 
 export interface AppSettings {
