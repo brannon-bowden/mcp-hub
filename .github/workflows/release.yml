@@ -100,34 +100,6 @@ jobs:
             echo "is_draft=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build mcp-hub-stdio CLI
-        shell: bash
-        run: |
-          cd src-tauri
-          if [ "${{ matrix.rust_target }}" != "" ]; then
-            cargo build --release --bin mcp-hub-stdio --target ${{ matrix.rust_target }}
-          else
-            cargo build --release --bin mcp-hub-stdio
-          fi
-
-      - name: Prepare CLI artifacts (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p cli-artifacts
-          if [ "${{ matrix.rust_target }}" != "" ]; then
-            cp src-tauri/target/${{ matrix.rust_target }}/release/mcp-hub-stdio cli-artifacts/mcp-hub-stdio-${{ matrix.rust_target }}
-          else
-            cp src-tauri/target/release/mcp-hub-stdio cli-artifacts/mcp-hub-stdio
-          fi
-
-      - name: Prepare CLI artifacts (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          mkdir -p cli-artifacts
-          cp src-tauri/target/release/mcp-hub-stdio.exe cli-artifacts/mcp-hub-stdio-${{ matrix.rust_target }}.exe
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -156,23 +128,15 @@ jobs:
             | macOS (Intel) | `.dmg` file for `x86_64` |
             | Windows | `.msi` or `.exe` installer |
 
-            ### Stdio Bridge CLI
-
-            The `mcp-hub-stdio` CLI allows you to connect Claude Desktop to MCP Hub's proxy server.
-
-            | Platform | Download |
-            |----------|----------|
-            | macOS (Apple Silicon) | `mcp-hub-stdio-aarch64-apple-darwin` |
-            | macOS (Intel) | `mcp-hub-stdio-x86_64-apple-darwin` |
-            | Windows | `mcp-hub-stdio-x86_64-pc-windows-msvc.exe` |
-
             ## Installation
 
             **macOS**: Download the `.dmg` file, open it, and drag MCP Hub to your Applications folder.
 
             **Windows**: Download and run the `.msi` installer, or use the `.exe` for a portable installation.
 
-            ### Using the Stdio Bridge with Claude Desktop
+            ## Using the Stdio Bridge with Claude Desktop
+
+            The stdio bridge script (`scripts/mcp-hub-stdio.mjs`) allows you to connect Claude Desktop to MCP Hub's proxy server. It requires Node.js 18+.
 
             1. Start MCP Hub and enable the proxy server in Settings
             2. Register an instance to get its proxy URL
@@ -182,8 +146,8 @@ jobs:
             {
               "mcpServers": {
                 "mcp-hub": {
-                  "command": "/path/to/mcp-hub-stdio",
-                  "args": ["--url", "http://localhost:24369/mcp/your-instance-id"]
+                  "command": "node",
+                  "args": ["/path/to/mcp-hub-stdio.mjs", "--url", "http://localhost:24369/mcp/your-instance-id"]
                 }
               }
             }
@@ -192,12 +156,12 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
-      - name: Upload CLI artifact to release
+      - name: Upload stdio bridge script to release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+        if: matrix.platform == 'macos-latest' && matrix.rust_target == 'aarch64-apple-darwin'
         with:
           tag_name: ${{ steps.release_info.outputs.tag_name }}
           draft: ${{ steps.release_info.outputs.is_draft == 'true' || github.event.inputs.draft == 'true' }}
-          files: cli-artifacts/*
+          files: scripts/mcp-hub-stdio.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

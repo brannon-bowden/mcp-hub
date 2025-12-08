@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   Moon,
   Sun,
@@ -15,6 +15,10 @@ import {
   Play,
   Square,
   Copy,
+  ScrollText,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +32,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useStore } from "@/store";
-import type { AppSettings, DiscoveryStatus, DiscoverySettings, ProxySettings, ProxyStatus } from "@/types";
+import type { AppSettings, DiscoveryStatus, DiscoverySettings, ProxySettings, ProxyStatus, LogEntry } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
 
 const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
@@ -55,6 +59,12 @@ export function Settings() {
   const [proxyStatus, setProxyStatus] = useState<ProxyStatus | null>(null);
   const [proxyLoading, setProxyLoading] = useState(false);
 
+  // Log viewer state
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logsExpanded, setLogsExpanded] = useState(false);
+  const [logsAutoScroll, setLogsAutoScroll] = useState(true);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+
   const loadDiscoveryStatus = useCallback(async () => {
     try {
       const status = await invoke<DiscoveryStatus>("get_discovery_status");
@@ -73,12 +83,49 @@ export function Settings() {
     }
   }, [getProxyStatus]);
 
+  const loadLogs = useCallback(async () => {
+    try {
+      const entries = await invoke<LogEntry[]>("get_logs");
+      setLogs(entries);
+    } catch (error) {
+      console.error("Failed to load logs:", error);
+    }
+  }, []);
+
+  const clearLogs = async () => {
+    try {
+      await invoke("clear_logs");
+      setLogs([]);
+    } catch (error) {
+      console.error("Failed to clear logs:", error);
+    }
+  };
+
   useEffect(() => {
     loadSettings();
     invoke<string>("get_app_data_dir").then(setAppDataDir).catch(console.error);
     loadDiscoveryStatus();
     loadProxyStatus();
-  }, [loadSettings, loadDiscoveryStatus, loadProxyStatus]);
+    loadLogs();
+  }, [loadSettings, loadDiscoveryStatus, loadProxyStatus, loadLogs]);
+
+  // Auto-refresh logs when expanded
+  useEffect(() => {
+    if (!logsExpanded) return;
+
+    const interval = setInterval(() => {
+      loadLogs();
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [logsExpanded, loadLogs]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logsAutoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs, logsAutoScroll]);
 
   useEffect(() => {
     // Ensure settings have defaults
@@ -179,6 +226,21 @@ export function Settings() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const getLogLevelColor = (level: string) => {
+    switch (level.toUpperCase()) {
+      case "ERROR":
+        return "text-red-500";
+      case "WARN":
+        return "text-yellow-500";
+      case "INFO":
+        return "text-blue-500";
+      case "DEBUG":
+        return "text-gray-400";
+      default:
+        return "text-foreground";
+    }
   };
 
   const applyTheme = (theme: "light" | "dark" | "system") => {
@@ -670,6 +732,105 @@ export function Settings() {
               </div>
             </div>
           </CardContent>
+        </Card>
+
+        {/* Debug Logs */}
+        <Card>
+          <CardHeader
+            className="cursor-pointer"
+            onClick={() => setLogsExpanded(!logsExpanded)}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ScrollText className="w-5 h-5" />
+                <CardTitle>Debug Logs</CardTitle>
+                {logs.length > 0 && (
+                  <span className="text-xs bg-muted px-2 py-0.5 rounded-full">
+                    {logs.length}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {logsExpanded && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        loadLogs();
+                      }}
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        clearLogs();
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </>
+                )}
+                {logsExpanded ? (
+                  <ChevronUp className="w-5 h-5 text-muted-foreground" />
+                ) : (
+                  <ChevronDown className="w-5 h-5 text-muted-foreground" />
+                )}
+              </div>
+            </div>
+            <CardDescription>
+              View internal application logs for debugging
+            </CardDescription>
+          </CardHeader>
+          {logsExpanded && (
+            <CardContent>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="autoScroll"
+                      checked={logsAutoScroll}
+                      onCheckedChange={setLogsAutoScroll}
+                    />
+                    <Label htmlFor="autoScroll" className="text-sm">
+                      Auto-scroll
+                    </Label>
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    Auto-refreshes every 2s
+                  </span>
+                </div>
+                <div
+                  ref={logContainerRef}
+                  className="h-64 overflow-y-auto bg-muted/30 rounded-lg p-2 font-mono text-xs"
+                >
+                  {logs.length === 0 ? (
+                    <div className="flex items-center justify-center h-full text-muted-foreground">
+                      No logs yet. Try syncing a client instance to see logs.
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {logs.map((log, index) => (
+                        <div key={index} className="flex gap-2 hover:bg-muted/50 px-1 rounded">
+                          <span className="text-muted-foreground whitespace-nowrap">
+                            {log.timestamp.split(" ")[1] || log.timestamp}
+                          </span>
+                          <span className={`font-semibold w-12 ${getLogLevelColor(log.level)}`}>
+                            [{log.level}]
+                          </span>
+                          <span className="break-all">{log.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          )}
         </Card>
       </div>
 

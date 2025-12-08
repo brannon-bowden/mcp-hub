@@ -89,8 +89,8 @@ export interface ProxySettings {
   enabled: boolean;
   port: number;
   autoStart: boolean;
-  /** Path to the mcp-hub-stdio binary (auto-detected if not set) */
-  stdioPath?: string;
+  /** Path to the mcp-hub-stdio.mjs script (auto-detected if not set) */
+  stdioScriptPath?: string;
 }
 
 export interface AppSettings {
@@ -244,4 +244,11 @@ export interface RegistryServer {
   tags: string[];
   repository?: string;
   homepage?: string;
+}
+
+// Log types
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
 }
