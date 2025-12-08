@@ -495,9 +495,9 @@ pub fn config_exists(path: &PathBuf) -> bool {
     path.exists() && path.is_file()
 }
 
-/// Get the path to the bundled mcp-hub-stdio binary.
-/// This binary is bundled with the app and located relative to the main executable.
-pub fn get_stdio_binary_path() -> Option<PathBuf> {
+/// Get the path to the bundled mcp-hub-stdio.mjs script.
+/// This script is bundled with the app and located relative to the main executable.
+pub fn get_stdio_script_path() -> Option<PathBuf> {
     // Get the path to the current executable
     let exe_path = std::env::current_exe().ok()?;
 
@@ -505,21 +505,18 @@ pub fn get_stdio_binary_path() -> Option<PathBuf> {
     {
         // On macOS, the app structure is:
         // MCP Hub.app/Contents/MacOS/mcp-hub (main executable)
-        // MCP Hub.app/Contents/MacOS/mcp-hub-stdio (sidecar binary)
+        // MCP Hub.app/Contents/Resources/scripts/mcp-hub-stdio.mjs
         let exe_dir = exe_path.parent()?;
-        let stdio_path = exe_dir.join("mcp-hub-stdio");
-        if stdio_path.exists() {
-            return Some(stdio_path);
+        let resources_dir = exe_dir.parent()?.join("Resources");
+        let script_path = resources_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path.exists() {
+            return Some(script_path);
         }
-        // Also check for development builds
-        if let Some(target_dir) = exe_dir.parent() {
-            let dev_path = target_dir.join("release").join("mcp-hub-stdio");
+        // Also check for development builds (script in project root)
+        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
             if dev_path.exists() {
                 return Some(dev_path);
-            }
-            let debug_path = target_dir.join("debug").join("mcp-hub-stdio");
-            if debug_path.exists() {
-                return Some(debug_path);
             }
         }
         None
@@ -527,21 +524,17 @@ pub fn get_stdio_binary_path() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows, the binary is in the same directory as the main executable
+        // On Windows, check in the same directory or scripts subdirectory
         let exe_dir = exe_path.parent()?;
-        let stdio_path = exe_dir.join("mcp-hub-stdio.exe");
-        if stdio_path.exists() {
-            return Some(stdio_path);
+        let script_path = exe_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path.exists() {
+            return Some(script_path);
         }
         // Also check for development builds
-        if let Some(target_dir) = exe_dir.parent() {
-            let dev_path = target_dir.join("release").join("mcp-hub-stdio.exe");
+        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
             if dev_path.exists() {
                 return Some(dev_path);
-            }
-            let debug_path = target_dir.join("debug").join("mcp-hub-stdio.exe");
-            if debug_path.exists() {
-                return Some(debug_path);
             }
         }
         None
@@ -549,21 +542,17 @@ pub fn get_stdio_binary_path() -> Option<PathBuf> {
 
     #[cfg(target_os = "linux")]
     {
-        // On Linux, the binary is in the same directory as the main executable
+        // On Linux, check in the same directory or scripts subdirectory
         let exe_dir = exe_path.parent()?;
-        let stdio_path = exe_dir.join("mcp-hub-stdio");
-        if stdio_path.exists() {
-            return Some(stdio_path);
+        let script_path = exe_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path.exists() {
+            return Some(script_path);
         }
         // Also check for development builds
-        if let Some(target_dir) = exe_dir.parent() {
-            let dev_path = target_dir.join("release").join("mcp-hub-stdio");
+        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
             if dev_path.exists() {
                 return Some(dev_path);
-            }
-            let debug_path = target_dir.join("debug").join("mcp-hub-stdio");
-            if debug_path.exists() {
-                return Some(debug_path);
             }
         }
         None
@@ -681,8 +670,8 @@ fn client_requires_merge_write(client_type: &ClientType) -> bool {
 pub struct ProxySyncOptions {
     /// Port the proxy server is running on
     pub proxy_port: u16,
-    /// Path to the mcp-hub-stdio binary (if None, will be auto-detected)
-    pub stdio_path: Option<String>,
+    /// Path to the mcp-hub-stdio.mjs script (if None, will be auto-detected)
+    pub stdio_script_path: Option<String>,
 }
 
 /// Convert servers to MCP config format and write to instance config file.
@@ -710,18 +699,18 @@ pub fn sync_servers_to_instance(
     // Check if we should use proxy mode
     if instance.use_proxy {
         if let Some(opts) = proxy_options {
-            // Get the stdio binary path
-            let stdio_path = opts.stdio_path.clone()
-                .or_else(|| get_stdio_binary_path().map(|p| p.to_string_lossy().to_string()))
-                .ok_or_else(|| "Could not find mcp-hub-stdio binary. Please ensure it is installed.".to_string())?;
+            // Get the stdio script path
+            let script_path = opts.stdio_script_path.clone()
+                .or_else(|| get_stdio_script_path().map(|p| p.to_string_lossy().to_string()))
+                .ok_or_else(|| "Could not find mcp-hub-stdio.mjs script. Please ensure it is installed or specify the path in settings.".to_string())?;
 
             // Build the proxy URL for this instance
             let proxy_url = format!("http://localhost:{}/mcp/{}", opts.proxy_port, instance.id);
 
-            // Create a single entry for the proxy bridge
+            // Create a single entry for the proxy bridge using node to run the script
             let entry = McpServerEntry {
-                command: stdio_path,
-                args: vec!["--url".to_string(), proxy_url],
+                command: "node".to_string(),
+                args: vec![script_path, "--url".to_string(), proxy_url],
                 env: HashMap::new(),
             };
             mcp_servers.insert("mcp-hub".to_string(), entry);

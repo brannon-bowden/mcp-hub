@@ -386,9 +386,9 @@ pub struct ProxySettings {
     pub port: u16,
     /// Auto-start proxy on app launch
     pub auto_start: bool,
-    /// Path to the mcp-hub-stdio binary for stdio bridge mode
+    /// Path to the mcp-hub-stdio.mjs script for stdio bridge mode
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdio_path: Option<String>,
+    pub stdio_script_path: Option<String>,
 }
 
 impl Default for ProxySettings {
@@ -397,7 +397,7 @@ impl Default for ProxySettings {
             enabled: false,
             port: 24369,
             auto_start: false,
-            stdio_path: None,
+            stdio_script_path: None,
         }
     }
 }
