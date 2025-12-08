@@ -126,7 +126,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p cli-artifacts
-          cp src-tauri/target/release/mcp-hub-stdio.exe cli-artifacts/mcp-hub-stdio-${{ matrix.rust_target }}.exe
+          if [ "${{ matrix.rust_target }}" != "" ]; then
+            cp src-tauri/target/${{ matrix.rust_target }}/release/mcp-hub-stdio.exe cli-artifacts/mcp-hub-stdio-${{ matrix.rust_target }}.exe
+          else
+            cp src-tauri/target/release/mcp-hub-stdio.exe cli-artifacts/mcp-hub-stdio.exe
+          fi
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
