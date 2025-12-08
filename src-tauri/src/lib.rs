@@ -3,7 +3,7 @@ mod db;
 mod models;
 pub mod services;
 
-use commands::AppState;
+use commands::{AppState, LogBuffer};
 use db::Database;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -41,6 +41,7 @@ pub fn run() {
             db: Mutex::new(database),
             discovery_server,
             proxy_server,
+            log_buffer: Mutex::new(LogBuffer::new()),
         })
         .setup(move |_app| {
             // Initialize discovery services based on saved settings
@@ -147,6 +148,10 @@ pub fn run() {
             commands::start_proxy_instance,
             commands::stop_proxy_instance,
             commands::unregister_proxy_instance,
+            // Logs
+            commands::get_logs,
+            commands::clear_logs,
+            commands::add_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

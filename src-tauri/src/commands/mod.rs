@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -11,10 +12,78 @@ use crate::models::{
 };
 use crate::services::{self, config, discovery, proxy};
 
+/// Maximum number of log entries to keep in memory
+const MAX_LOG_ENTRIES: usize = 500;
+
+/// A single log entry
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
+
+/// In-memory log buffer for UI viewing
+pub struct LogBuffer {
+    entries: VecDeque<LogEntry>,
+}
+
+impl LogBuffer {
+    pub fn new() -> Self {
+        Self {
+            entries: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+        }
+    }
+
+    pub fn add(&mut self, level: &str, message: String) {
+        if self.entries.len() >= MAX_LOG_ENTRIES {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(LogEntry {
+            timestamp: Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+            level: level.to_string(),
+            message,
+        });
+    }
+
+    pub fn get_entries(&self) -> Vec<LogEntry> {
+        self.entries.iter().cloned().collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+impl Default for LogBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct AppState {
     pub db: Mutex<Database>,
     pub discovery_server: Arc<RwLock<Option<discovery::DiscoveryServerHandle>>>,
     pub proxy_server: Arc<RwLock<Option<proxy::ProxyServerHandle>>>,
+    pub log_buffer: Mutex<LogBuffer>,
+}
+
+/// Helper macro to log to both env_logger and the UI log buffer
+#[macro_export]
+macro_rules! app_log {
+    ($state:expr, $level:expr, $($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        match $level {
+            "ERROR" => log::error!("{}", msg),
+            "WARN" => log::warn!("{}", msg),
+            "INFO" => log::info!("{}", msg),
+            "DEBUG" => log::debug!("{}", msg),
+            _ => log::info!("{}", msg),
+        }
+        if let Ok(mut buffer) = $state.log_buffer.lock() {
+            buffer.add($level, msg);
+        }
+    }};
 }
 
 // ==================== Server Commands ====================
@@ -119,6 +188,11 @@ pub fn get_enabled_servers(
 
 #[tauri::command]
 pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Option<String>, String> {
+    // Log the sync attempt
+    if let Ok(mut buffer) = state.log_buffer.lock() {
+        buffer.add("INFO", format!("Starting sync for instance: {}", instance_id));
+    }
+
     let db = state.db.lock().map_err(|e| e.to_string())?;
 
     // Get instance
@@ -127,10 +201,19 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
         .map_err(|e| e.to_string())?
         .ok_or("Instance not found")?;
 
+    if let Ok(mut buffer) = state.log_buffer.lock() {
+        buffer.add("DEBUG", format!("Instance '{}' use_proxy={}, config_path={}",
+            instance.name, instance.use_proxy, instance.config_path));
+    }
+
     // Get enabled servers for this instance
     instance.enabled_servers = db
         .get_enabled_servers_for_instance(&instance_id)
         .map_err(|e| e.to_string())?;
+
+    if let Ok(mut buffer) = state.log_buffer.lock() {
+        buffer.add("DEBUG", format!("Enabled servers: {:?}", instance.enabled_servers));
+    }
 
     // Get all servers
     let servers = db.get_all_servers().map_err(|e| e.to_string())?;
@@ -145,11 +228,27 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
 
     // Build proxy options if the instance uses proxy mode
     let proxy_options = if instance.use_proxy {
+        if let Ok(mut buffer) = state.log_buffer.lock() {
+            buffer.add("INFO", format!("Proxy mode enabled, port={}, script_path={:?}",
+                settings.proxy.port, settings.proxy.stdio_script_path));
+        }
+
+        // Try to find the script path
+        let script_path = settings.proxy.stdio_script_path.clone()
+            .or_else(|| config::get_stdio_script_path().map(|p| p.to_string_lossy().to_string()));
+
+        if let Ok(mut buffer) = state.log_buffer.lock() {
+            buffer.add("DEBUG", format!("Resolved script path: {:?}", script_path));
+        }
+
         Some(config::ProxySyncOptions {
             proxy_port: settings.proxy.port,
             stdio_script_path: settings.proxy.stdio_script_path.clone(),
         })
     } else {
+        if let Ok(mut buffer) = state.log_buffer.lock() {
+            buffer.add("DEBUG", "Proxy mode NOT enabled for this instance".to_string());
+        }
         None
     };
 
@@ -157,12 +256,28 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
     let backup_dir = config::get_backup_dir();
 
     // Sync configuration
-    let backup_path = config::sync_servers_to_instance(
+    let result = config::sync_servers_to_instance(
         &instance,
         &servers,
         backup_dir.as_ref(),
         proxy_options.as_ref(),
-    )?;
+    );
+
+    match &result {
+        Ok(backup_path) => {
+            if let Ok(mut buffer) = state.log_buffer.lock() {
+                buffer.add("INFO", format!("Sync successful for '{}', backup: {:?}",
+                    instance.name, backup_path));
+            }
+        }
+        Err(e) => {
+            if let Ok(mut buffer) = state.log_buffer.lock() {
+                buffer.add("ERROR", format!("Sync failed for '{}': {}", instance.name, e));
+            }
+        }
+    }
+
+    let backup_path = result?;
 
     // Record backup if created
     if let Some(ref path) = backup_path {
@@ -744,4 +859,29 @@ pub async fn unregister_proxy_instance(
 
     let proxy_state = handle.state();
     proxy::unregister_instance(&proxy_state, &instance_id).await
+}
+
+// ==================== Log Commands ====================
+
+/// Get all log entries from the in-memory buffer
+#[tauri::command]
+pub fn get_logs(state: State<AppState>) -> Result<Vec<LogEntry>, String> {
+    let buffer = state.log_buffer.lock().map_err(|e| e.to_string())?;
+    Ok(buffer.get_entries())
+}
+
+/// Clear all log entries
+#[tauri::command]
+pub fn clear_logs(state: State<AppState>) -> Result<(), String> {
+    let mut buffer = state.log_buffer.lock().map_err(|e| e.to_string())?;
+    buffer.clear();
+    Ok(())
+}
+
+/// Add a log entry (for frontend logging)
+#[tauri::command]
+pub fn add_log(state: State<AppState>, level: String, message: String) -> Result<(), String> {
+    let mut buffer = state.log_buffer.lock().map_err(|e| e.to_string())?;
+    buffer.add(&level, message);
+    Ok(())
 }
