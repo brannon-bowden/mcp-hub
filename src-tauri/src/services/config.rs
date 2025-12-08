@@ -500,63 +500,56 @@ pub fn config_exists(path: &PathBuf) -> bool {
 pub fn get_stdio_script_path() -> Option<PathBuf> {
     // Get the path to the current executable
     let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+
+    // Development builds: executable is at src-tauri/target/debug/mcp-hub or src-tauri/target/release/mcp-hub
+    // We need to go up 3 levels to reach project root: debug -> target -> src-tauri -> project
+    if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        if dev_path.exists() {
+            return Some(dev_path);
+        }
+    }
 
     #[cfg(target_os = "macos")]
     {
-        // On macOS, the app structure is:
+        // On macOS production, the app structure is:
         // MCP Hub.app/Contents/MacOS/mcp-hub (main executable)
-        // MCP Hub.app/Contents/Resources/scripts/mcp-hub-stdio.mjs
-        let exe_dir = exe_path.parent()?;
+        // MCP Hub.app/Contents/Resources/mcp-hub-stdio.mjs (bundled resource - Tauri flattens the path)
         let resources_dir = exe_dir.parent()?.join("Resources");
-        let script_path = resources_dir.join("scripts").join("mcp-hub-stdio.mjs");
+
+        // Tauri bundles resources directly into Resources folder (flattens the path)
+        let script_path = resources_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
         }
-        // Also check for development builds (script in project root)
-        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
-            if dev_path.exists() {
-                return Some(dev_path);
-            }
+
+        // Also check in a scripts subdirectory in case bundling behavior changes
+        let script_path_subdir = resources_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path_subdir.exists() {
+            return Some(script_path_subdir);
         }
-        None
     }
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows, check in the same directory or scripts subdirectory
-        let exe_dir = exe_path.parent()?;
-        let script_path = exe_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        // On Windows production, Tauri puts resources next to the executable
+        let script_path = exe_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
         }
-        // Also check for development builds
-        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
-            if dev_path.exists() {
-                return Some(dev_path);
-            }
-        }
-        None
     }
 
     #[cfg(target_os = "linux")]
     {
-        // On Linux, check in the same directory or scripts subdirectory
-        let exe_dir = exe_path.parent()?;
-        let script_path = exe_dir.join("scripts").join("mcp-hub-stdio.mjs");
+        // On Linux production, Tauri puts resources next to the executable
+        let script_path = exe_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
         }
-        // Also check for development builds
-        if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
-            if dev_path.exists() {
-                return Some(dev_path);
-            }
-        }
-        None
     }
+
+    None
 }
 
 /// Read and parse an MCP configuration file
