@@ -19,7 +19,12 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
+  Download,
+  RotateCw,
 } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,6 +70,13 @@ export function Settings() {
   const [logsAutoScroll, setLogsAutoScroll] = useState(true);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
+  // Version and update state
+  const [appVersion, setAppVersion] = useState<string>("...");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "checking" | "available" | "downloading" | "ready" | "error" | "up-to-date">("idle");
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
   const loadDiscoveryStatus = useCallback(async () => {
     try {
       const status = await invoke<DiscoveryStatus>("get_discovery_status");
@@ -101,12 +113,75 @@ export function Settings() {
     }
   };
 
+  const checkForUpdates = useCallback(async () => {
+    setUpdateStatus("checking");
+    setUpdateError(null);
+    try {
+      const update = await check();
+      if (update) {
+        setUpdateVersion(update.version);
+        setUpdateStatus("available");
+      } else {
+        setUpdateStatus("up-to-date");
+      }
+    } catch (error) {
+      console.error("Failed to check for updates:", error);
+      setUpdateError(error instanceof Error ? error.message : "Failed to check for updates");
+      setUpdateStatus("error");
+    }
+  }, []);
+
+  const downloadAndInstallUpdate = useCallback(async () => {
+    setUpdateStatus("downloading");
+    setDownloadProgress(0);
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus("up-to-date");
+        return;
+      }
+
+      let contentLength = 0;
+      let downloaded = 0;
+
+      await update.downloadAndInstall((progress) => {
+        if (progress.event === "Started" && progress.data.contentLength) {
+          contentLength = progress.data.contentLength;
+        } else if (progress.event === "Progress") {
+          downloaded += progress.data.chunkLength;
+          if (contentLength > 0) {
+            setDownloadProgress((downloaded / contentLength) * 100);
+          }
+        } else if (progress.event === "Finished") {
+          setDownloadProgress(100);
+        }
+      });
+
+      setUpdateStatus("ready");
+    } catch (error) {
+      console.error("Failed to download update:", error);
+      setUpdateError(error instanceof Error ? error.message : "Failed to download update");
+      setUpdateStatus("error");
+    }
+  }, []);
+
+  const restartApp = useCallback(async () => {
+    try {
+      await relaunch();
+    } catch (error) {
+      console.error("Failed to restart:", error);
+      setUpdateError("Failed to restart. Please restart manually.");
+    }
+  }, []);
+
   useEffect(() => {
     loadSettings();
     invoke<string>("get_app_data_dir").then(setAppDataDir).catch(console.error);
     loadDiscoveryStatus();
     loadProxyStatus();
     loadLogs();
+    // Load app version
+    getVersion().then(setAppVersion).catch(console.error);
   }, [loadSettings, loadDiscoveryStatus, loadProxyStatus, loadLogs]);
 
   // Auto-refresh logs when expanded
@@ -721,14 +796,78 @@ export function Settings() {
             <CardTitle>About</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Version</span>
-                <span>0.1.0</span>
+            <div className="space-y-4">
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Version</span>
+                  <span>{appVersion}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Built with</span>
+                  <span>Tauri + React</span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Built with</span>
-                <span>Tauri + React</span>
+
+              {/* Update Section */}
+              <div className="pt-2 border-t">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Updates</p>
+                    <p className="text-xs text-muted-foreground">
+                      {updateStatus === "idle" && "Check for new versions"}
+                      {updateStatus === "checking" && "Checking for updates..."}
+                      {updateStatus === "up-to-date" && "You're up to date!"}
+                      {updateStatus === "available" && `Version ${updateVersion} is available`}
+                      {updateStatus === "downloading" && `Downloading... ${Math.round(downloadProgress)}%`}
+                      {updateStatus === "ready" && "Update ready - restart to apply"}
+                      {updateStatus === "error" && (updateError || "Update check failed")}
+                    </p>
+                  </div>
+                  <div>
+                    {updateStatus === "idle" && (
+                      <Button variant="outline" size="sm" onClick={checkForUpdates}>
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Check for Updates
+                      </Button>
+                    )}
+                    {updateStatus === "checking" && (
+                      <Button variant="outline" size="sm" disabled>
+                        <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                        Checking...
+                      </Button>
+                    )}
+                    {updateStatus === "up-to-date" && (
+                      <Button variant="outline" size="sm" onClick={checkForUpdates}>
+                        <CheckCircle2 className="w-4 h-4 mr-2 text-green-500" />
+                        Check Again
+                      </Button>
+                    )}
+                    {updateStatus === "available" && (
+                      <Button variant="default" size="sm" onClick={downloadAndInstallUpdate}>
+                        <Download className="w-4 h-4 mr-2" />
+                        Download Update
+                      </Button>
+                    )}
+                    {updateStatus === "downloading" && (
+                      <Button variant="outline" size="sm" disabled>
+                        <Download className="w-4 h-4 mr-2 animate-pulse" />
+                        Downloading...
+                      </Button>
+                    )}
+                    {updateStatus === "ready" && (
+                      <Button variant="default" size="sm" onClick={restartApp}>
+                        <RotateCw className="w-4 h-4 mr-2" />
+                        Restart Now
+                      </Button>
+                    )}
+                    {updateStatus === "error" && (
+                      <Button variant="outline" size="sm" onClick={checkForUpdates}>
+                        <XCircle className="w-4 h-4 mr-2 text-red-500" />
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </CardContent>

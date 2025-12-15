@@ -42,5 +42,12 @@
     "shortDescription": "MCP Server Manager",
     "longDescription": "A centralized management interface for Model Context Protocol (MCP) servers. Configure MCP servers once and deploy to multiple AI client applications."
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/brannon-bowden/mcp-hub/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  }
 }
