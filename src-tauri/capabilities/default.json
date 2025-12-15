@@ -17,6 +17,8 @@
       ]
     },
     "fs:allow-read",
-    "fs:allow-write"
+    "fs:allow-write",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

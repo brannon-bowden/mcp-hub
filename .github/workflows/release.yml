@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
   pull_request:
     branches:
       - main
@@ -13,37 +11,125 @@ on:
       - closed
   workflow_dispatch:
     inputs:
-      draft:
-        description: 'Create as draft release'
+      bump_type:
+        description: 'Version bump type'
         required: false
-        default: true
-        type: boolean
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    # Run on: tag push, direct push to main, or merged PR to main
+  # Version bump job - runs on merged PRs or manual dispatch
+  version-bump:
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push') ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true) ||
+      (github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      tag_name: ${{ steps.bump.outputs.tag_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+
+      - name: Bump version
+        id: bump
+        env:
+          CURRENT_VERSION: ${{ steps.current.outputs.version }}
+          BUMP_TYPE: ${{ github.event.inputs.bump_type || 'patch' }}
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          case "$BUMP_TYPE" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=v$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Bumping from $CURRENT_VERSION to $NEW_VERSION ($BUMP_TYPE)"
+
+      - name: Update version in package.json
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          sed -i "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$NEW_VERSION\"/" package.json
+
+      - name: Update version in Cargo.toml
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          sed -i "s/^version = \"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
+
+      - name: Update version in tauri.conf.json
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          sed -i "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
+
+      - name: Commit version bump
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+        run: |
+          git add package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+          git push origin main
+
+      - name: Create and push tag
+        env:
+          TAG_NAME: ${{ steps.bump.outputs.tag_name }}
+        run: |
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+
+  # Build job - runs on tag push (including from version-bump)
+  build:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS ARM64 (Apple Silicon)
           - platform: macos-latest
             args: --target aarch64-apple-darwin
             rust_target: aarch64-apple-darwin
 
-          # macOS x86_64 (Intel)
           - platform: macos-latest
             args: --target x86_64-apple-darwin
             rust_target: x86_64-apple-darwin
 
-          # Windows x86_64
           - platform: windows-latest
             args: ''
             rust_target: x86_64-pc-windows-msvc
@@ -78,28 +164,6 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
-      - name: Get version from Cargo.toml
-        id: get_version
-        shell: bash
-        run: |
-          VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Detected version: $VERSION"
-
-      - name: Determine release info
-        id: release_info
-        shell: bash
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "tag_name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "release_name=MCP Hub ${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "is_draft=false" >> $GITHUB_OUTPUT
-          else
-            echo "tag_name=v${{ steps.get_version.outputs.version }}-build.${{ github.run_number }}" >> $GITHUB_OUTPUT
-            echo "release_name=MCP Hub v${{ steps.get_version.outputs.version }} (Build ${{ github.run_number }})" >> $GITHUB_OUTPUT
-            echo "is_draft=true" >> $GITHUB_OUTPUT
-          fi
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -112,9 +176,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ steps.release_info.outputs.tag_name }}
-          releaseName: ${{ steps.release_info.outputs.release_name }}
+          tagName: ${{ github.ref_name }}
+          releaseName: MCP Hub ${{ github.ref_name }}
           releaseBody: |
             ## What's New
 
@@ -134,6 +201,10 @@ jobs:
 
             **Windows**: Download and run the `.msi` installer, or use the `.exe` for a portable installation.
 
+            ## Auto-Updates
+
+            MCP Hub now supports automatic updates! The app will check for updates on startup and notify you when a new version is available.
+
             ## Using the Stdio Bridge with Claude Desktop
 
             The stdio bridge script (`scripts/mcp-hub-stdio.mjs`) allows you to connect Claude Desktop to MCP Hub's proxy server. It requires Node.js 18+.
@@ -152,7 +223,7 @@ jobs:
               }
             }
             ```
-          releaseDraft: ${{ steps.release_info.outputs.is_draft == 'true' || github.event.inputs.draft == 'true' }}
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -160,8 +231,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         if: matrix.platform == 'macos-latest' && matrix.rust_target == 'aarch64-apple-darwin'
         with:
-          tag_name: ${{ steps.release_info.outputs.tag_name }}
-          draft: ${{ steps.release_info.outputs.is_draft == 'true' || github.event.inputs.draft == 'true' }}
+          tag_name: ${{ github.ref_name }}
           files: scripts/mcp-hub-stdio.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

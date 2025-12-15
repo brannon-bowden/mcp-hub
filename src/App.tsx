@@ -4,6 +4,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Servers } from "@/pages/Servers";
 import { Instances } from "@/pages/Instances";
 import { Settings } from "@/pages/Settings";
+import { UpdateNotifier } from "@/components/UpdateNotifier";
 import { useEffect } from "react";
 import { useStore } from "@/store";
 
@@ -38,16 +39,19 @@ function App() {
   }, [settings.theme]);
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="servers" element={<Servers />} />
-          <Route path="instances" element={<Instances />} />
-          <Route path="settings" element={<Settings />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <>
+      <UpdateNotifier />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Layout />}>
+            <Route index element={<Dashboard />} />
+            <Route path="servers" element={<Servers />} />
+            <Route path="instances" element={<Instances />} />
+            <Route path="settings" element={<Settings />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </>
   );
 }
 
