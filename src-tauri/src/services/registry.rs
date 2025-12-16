@@ -46,10 +46,10 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
         RegistrySource {
             id: "builtin".to_string(),
             name: "MCP Hub Built-in".to_string(),
-            description: "Curated collection of 50+ popular MCP servers, including official Anthropic servers and verified community servers.".to_string(),
+            description: "Curated collection of popular MCP servers, including official Anthropic servers and verified community servers.".to_string(),
             url: "builtin".to_string(),
             icon: Some("package".to_string()),
-            server_count: Some(55),
+            server_count: None, // Dynamic - calculated from actual list
         },
         RegistrySource {
             id: "mcp-official".to_string(),
@@ -70,26 +70,26 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
         RegistrySource {
             id: "smithery".to_string(),
             name: "Smithery Registry".to_string(),
-            description: "Smithery.ai's MCP server registry with a wide variety of community-contributed servers.".to_string(),
+            description: "Selection of popular servers from Smithery.ai's MCP server registry.".to_string(),
             url: "https://smithery.ai".to_string(),
             icon: Some("hammer".to_string()),
-            server_count: Some(200),
+            server_count: None, // Curated subset
         },
         RegistrySource {
             id: "glama".to_string(),
             name: "Glama MCP Directory".to_string(),
-            description: "Glama's directory of MCP servers with ratings and reviews.".to_string(),
+            description: "Selection of popular servers from Glama's MCP directory.".to_string(),
             url: "https://glama.ai/mcp/servers".to_string(),
             icon: Some("layout-grid".to_string()),
-            server_count: Some(150),
+            server_count: None, // Curated subset
         },
         RegistrySource {
             id: "mcp-get".to_string(),
             name: "mcp-get Registry".to_string(),
-            description: "The mcp-get package manager's server registry for easy installation.".to_string(),
+            description: "Selection of popular servers from the mcp-get package manager.".to_string(),
             url: "https://mcp-get.com".to_string(),
             icon: Some("download".to_string()),
-            server_count: Some(80),
+            server_count: None, // Curated subset
         },
     ]
 }
