@@ -25,6 +25,63 @@ permissions:
   contents: write
 
 jobs:
+  # Validation job - ensures version consistency on direct tag pushes
+  validate-versions:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "Tag version: $TAG_VERSION"
+
+          # Extract versions from all files
+          PKG_VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/')
+          CARGO_VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/version = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/')
+          TAURI_VERSION=$(grep '"version"' src-tauri/tauri.conf.json | head -1 | sed 's/.*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/')
+
+          echo "package.json version: $PKG_VERSION"
+          echo "Cargo.toml version: $CARGO_VERSION"
+          echo "tauri.conf.json version: $TAURI_VERSION"
+
+          ERRORS=0
+
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ ERROR: package.json version ($PKG_VERSION) doesn't match tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ ERROR: Cargo.toml version ($CARGO_VERSION) doesn't match tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+
+          if [ "$TAURI_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ ERROR: tauri.conf.json version ($TAURI_VERSION) doesn't match tag ($TAG_VERSION)"
+            ERRORS=1
+          fi
+
+          if [ $ERRORS -eq 1 ]; then
+            echo ""
+            echo "==============================================================="
+            echo "VERSION MISMATCH DETECTED"
+            echo "==============================================================="
+            echo ""
+            echo "To fix this, use one of these methods instead of pushing tags directly:"
+            echo ""
+            echo "  1. Merge a PR to main (auto-bumps patch version)"
+            echo "  2. Run workflow manually: Actions > Build and Release > Run workflow"
+            echo "  3. Use the local script: ./scripts/bump-version.sh <patch|minor|major>"
+            echo ""
+            echo "==============================================================="
+            exit 1
+          fi
+
+          echo "✅ All versions match tag $TAG_VERSION"
+
   # Version bump job - runs on merged PRs or manual dispatch
   version-bump:
     if: |
@@ -115,10 +172,10 @@ jobs:
           git tag "$TAG_NAME"
           git push origin "$TAG_NAME"
 
-  # Build job - runs after version-bump OR on direct tag push
+  # Build job - runs after version-bump OR on validated direct tag push
   build:
-    needs: [version-bump]
-    if: always() && (needs.version-bump.result == 'success' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    needs: [version-bump, validate-versions]
+    if: always() && (needs.version-bump.result == 'success' || (needs.validate-versions.result == 'success'))
     strategy:
       fail-fast: false
       matrix:
