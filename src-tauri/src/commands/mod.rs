@@ -815,8 +815,8 @@ pub async fn register_proxy_instance(
     let proxy_state = handle.state();
     proxy::register_instance(&proxy_state, &instance, servers).await?;
 
-    // Return the proxy URL for this instance
-    Ok(format!("http://127.0.0.1:24369/mcp/{}", instance_id))
+    // Return just the instance ID - frontend constructs the URL with correct port
+    Ok(instance_id)
 }
 
 /// Start servers for an instance (connects to actual MCP servers)
