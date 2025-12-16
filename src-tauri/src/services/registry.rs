@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use log::{info, warn};
 
 use crate::models::{McpServer, ServerSource, SourceType};
+
+const AWESOME_MCP_README_URL: &str = "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md";
 
 /// A registry server entry from external sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,10 +46,10 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
         RegistrySource {
             id: "builtin".to_string(),
             name: "MCP Hub Built-in".to_string(),
-            description: "Curated collection of 50+ popular MCP servers, including official Anthropic servers and verified community servers.".to_string(),
+            description: "Curated collection of popular MCP servers, including official Anthropic servers and verified community servers.".to_string(),
             url: "builtin".to_string(),
             icon: Some("package".to_string()),
-            server_count: Some(55),
+            server_count: None, // Dynamic - calculated from actual list
         },
         RegistrySource {
             id: "mcp-official".to_string(),
@@ -59,34 +62,34 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
         RegistrySource {
             id: "awesome-mcp".to_string(),
             name: "Awesome MCP Servers".to_string(),
-            description: "Community-curated list of awesome MCP servers from the awesome-mcp-servers repository.".to_string(),
+            description: "Community-curated list from awesome-mcp-servers. Fetched live from GitHub.".to_string(),
             url: "https://github.com/punkpeye/awesome-mcp-servers".to_string(),
             icon: Some("star".to_string()),
-            server_count: Some(100),
+            server_count: None, // Dynamic - fetched from GitHub
         },
         RegistrySource {
             id: "smithery".to_string(),
-            name: "Smithery Registry".to_string(),
-            description: "Smithery.ai's MCP server registry with a wide variety of community-contributed servers.".to_string(),
+            name: "Smithery (Sample)".to_string(),
+            description: "Sample of popular servers. Visit smithery.ai for 3000+ servers with cloud hosting.".to_string(),
             url: "https://smithery.ai".to_string(),
             icon: Some("hammer".to_string()),
-            server_count: Some(200),
+            server_count: None,
         },
         RegistrySource {
             id: "glama".to_string(),
-            name: "Glama MCP Directory".to_string(),
-            description: "Glama's directory of MCP servers with ratings and reviews.".to_string(),
+            name: "Glama (Sample)".to_string(),
+            description: "Sample of popular servers. Visit glama.ai/mcp/servers for the full directory.".to_string(),
             url: "https://glama.ai/mcp/servers".to_string(),
             icon: Some("layout-grid".to_string()),
-            server_count: Some(150),
+            server_count: None,
         },
         RegistrySource {
             id: "mcp-get".to_string(),
-            name: "mcp-get Registry".to_string(),
-            description: "The mcp-get package manager's server registry for easy installation.".to_string(),
+            name: "mcp-get (Sample)".to_string(),
+            description: "Sample of popular servers. Visit mcp-get.com for the full registry.".to_string(),
             url: "https://mcp-get.com".to_string(),
             icon: Some("download".to_string()),
-            server_count: Some(80),
+            server_count: None,
         },
     ]
 }
@@ -96,11 +99,222 @@ pub async fn fetch_registry_servers(registry_id: &str) -> Result<Vec<RegistrySer
     match registry_id {
         "builtin" => Ok(get_builtin_servers()),
         "mcp-official" => Ok(get_official_servers()),
-        "awesome-mcp" => Ok(get_awesome_mcp_servers()),
+        "awesome-mcp" => {
+            // Try to fetch live from GitHub, fall back to hardcoded list
+            match fetch_awesome_mcp_from_github().await {
+                Ok(servers) => {
+                    info!("Fetched {} servers from Awesome MCP GitHub", servers.len());
+                    Ok(servers)
+                }
+                Err(e) => {
+                    warn!("Failed to fetch from GitHub, using fallback: {}", e);
+                    Ok(get_awesome_mcp_servers_fallback())
+                }
+            }
+        }
         "smithery" => Ok(get_smithery_servers()),
         "glama" => Ok(get_glama_servers()),
         "mcp-get" => Ok(get_mcp_get_servers()),
         _ => Err(format!("Unknown registry: {}", registry_id)),
+    }
+}
+
+/// Fetch and parse the Awesome MCP Servers README from GitHub
+async fn fetch_awesome_mcp_from_github() -> Result<Vec<RegistryServer>, String> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(AWESOME_MCP_README_URL)
+        .header("User-Agent", "MCP-Hub")
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("GitHub returned status: {}", response.status()));
+    }
+
+    let readme_content = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    Ok(parse_awesome_mcp_readme(&readme_content))
+}
+
+/// Parse the Awesome MCP README markdown to extract server entries
+fn parse_awesome_mcp_readme(content: &str) -> Vec<RegistryServer> {
+    let mut servers = Vec::new();
+    let mut current_category = String::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track category headers (## or ###)
+        if trimmed.starts_with("## ") || trimmed.starts_with("### ") {
+            current_category = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .to_string();
+            continue;
+        }
+
+        // Parse server entries: - [name](url) emojis - description
+        if trimmed.starts_with("- [") || trimmed.starts_with("* [") {
+            if let Some(server) = parse_server_entry(trimmed, &current_category) {
+                servers.push(server);
+            }
+        }
+    }
+
+    servers
+}
+
+/// Parse a single server entry line from the README
+fn parse_server_entry(line: &str, category: &str) -> Option<RegistryServer> {
+    // Pattern: - [name](url) emojis - description
+    // or: - [name](url) emojis: description
+
+    let line = line.trim_start_matches(|c| c == '-' || c == '*' || c == ' ');
+
+    // Extract [name](url)
+    let name_start = line.find('[')?;
+    let name_end = line.find(']')?;
+    let url_start = line.find("](")? + 2;
+    let url_end = line[url_start..].find(')')? + url_start;
+
+    let name = line[name_start + 1..name_end].to_string();
+    let url = line[url_start..url_end].to_string();
+
+    // Skip non-GitHub links or invalid entries
+    if !url.contains("github.com") || name.is_empty() {
+        return None;
+    }
+
+    // Extract the rest after the URL
+    let rest = line[url_end + 1..].trim();
+
+    // Parse emojis and description
+    let (tags, description) = parse_emojis_and_description(rest, category);
+
+    // Infer command from repository URL
+    let (command, args) = infer_command_from_repo(&url, &name, &tags);
+
+    // Use the last part of the repo name as display name if it's a full path
+    let display_name = if name.contains('/') {
+        name.split('/').last().unwrap_or(&name).to_string()
+    } else {
+        name.clone()
+    };
+
+    Some(RegistryServer {
+        name: display_name,
+        description: if description.is_empty() { None } else { Some(description) },
+        command,
+        args,
+        env: HashMap::new(),
+        tags,
+        repository: Some(url),
+        homepage: None,
+    })
+}
+
+/// Parse emoji markers and description from the remainder of a line
+fn parse_emojis_and_description(rest: &str, category: &str) -> (Vec<String>, String) {
+    let mut tags = vec!["awesome-mcp".to_string()];
+
+    // Add category as a tag (normalized)
+    let normalized_category = category
+        .to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect::<String>();
+    if !normalized_category.is_empty() {
+        tags.push(normalized_category);
+    }
+
+    // Language emojis
+    if rest.contains("📇") { tags.push("typescript".to_string()); }
+    if rest.contains("🐍") { tags.push("python".to_string()); }
+    if rest.contains("🦀") { tags.push("rust".to_string()); }
+    if rest.contains("🐹") { tags.push("go".to_string()); }
+    if rest.contains("#️⃣") || rest.contains("🇨") { tags.push("csharp".to_string()); }
+    if rest.contains("☕") { tags.push("java".to_string()); }
+    if rest.contains("💎") { tags.push("ruby".to_string()); }
+
+    // Scope emojis
+    if rest.contains("☁️") { tags.push("cloud".to_string()); }
+    if rest.contains("🏠") { tags.push("local".to_string()); }
+
+    // OS emojis
+    if rest.contains("🍎") { tags.push("macos".to_string()); }
+    if rest.contains("🪟") { tags.push("windows".to_string()); }
+    if rest.contains("🐧") { tags.push("linux".to_string()); }
+
+    // Official badge
+    if rest.contains("🎖️") { tags.push("official".to_string()); }
+
+    // Extract description (after " - " or ": ")
+    let description = if let Some(idx) = rest.find(" - ") {
+        rest[idx + 3..].trim().to_string()
+    } else if let Some(idx) = rest.find(": ") {
+        rest[idx + 2..].trim().to_string()
+    } else {
+        // Try to find where emojis end and text begins
+        rest.chars()
+            .skip_while(|c| !c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+
+    (tags, description)
+}
+
+/// Infer the command and args from a GitHub repository URL
+fn infer_command_from_repo(url: &str, name: &str, tags: &[String]) -> (String, Vec<String>) {
+    // Extract org/repo from GitHub URL
+    let repo_path = url
+        .trim_end_matches('/')
+        .trim_start_matches("https://github.com/")
+        .trim_start_matches("http://github.com/");
+
+    // Check if it's a known npm package pattern
+    let is_typescript = tags.iter().any(|t| t == "typescript");
+    let is_python = tags.iter().any(|t| t == "python");
+
+    if is_python {
+        // Python packages typically use uvx
+        let package_name = if name.starts_with("mcp-server-") || name.starts_with("mcp_server_") {
+            name.replace('_', "-")
+        } else {
+            format!("mcp-server-{}", name.to_lowercase().replace(' ', "-"))
+        };
+        ("uvx".to_string(), vec![package_name])
+    } else if is_typescript || !is_python {
+        // Default to npx for TypeScript or unknown
+        // Try to infer npm package name from repo
+        let parts: Vec<&str> = repo_path.split('/').collect();
+        let package_name = if parts.len() >= 2 {
+            let org = parts[0];
+            let repo = parts[1];
+
+            // Check for scoped packages (@org/package)
+            if org.starts_with('@') || ["modelcontextprotocol", "anthropic", "anthropics"].contains(&org) {
+                format!("@{}/{}", org, repo)
+            } else if repo.starts_with("mcp-server-") || repo.starts_with("mcp-") {
+                repo.to_string()
+            } else {
+                format!("@{}/{}", org, repo)
+            }
+        } else {
+            name.to_lowercase().replace(' ', "-")
+        };
+
+        ("npx".to_string(), vec!["-y".to_string(), package_name])
+    } else {
+        // Fallback
+        ("npx".to_string(), vec!["-y".to_string(), name.to_lowercase().replace(' ', "-")])
     }
 }
 
@@ -328,8 +542,8 @@ fn get_official_servers() -> Vec<RegistryServer> {
     ]
 }
 
-/// Get servers from Awesome MCP Servers list
-fn get_awesome_mcp_servers() -> Vec<RegistryServer> {
+/// Fallback list of Awesome MCP servers (used when GitHub fetch fails)
+fn get_awesome_mcp_servers_fallback() -> Vec<RegistryServer> {
     vec![
         // Data & Databases
         RegistryServer {
