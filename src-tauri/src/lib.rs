@@ -23,9 +23,6 @@ pub fn run() {
     // Create shared discovery server handle
     let discovery_server = Arc::new(RwLock::new(None));
 
-    // Create shared proxy server handle
-    let proxy_server = Arc::new(RwLock::new(None));
-
     // Clone for setup hook
     let discovery_server_setup = discovery_server.clone();
     let proxy_server_setup = proxy_server.clone();
@@ -43,7 +40,6 @@ pub fn run() {
         .manage(AppState {
             db: Mutex::new(database),
             discovery_server,
-            proxy_server,
             log_buffer: Mutex::new(LogBuffer::new()),
         })
         .setup(move |_app| {
@@ -161,14 +157,6 @@ pub fn run() {
             commands::refresh_discovery,
             commands::get_discovery_status,
             commands::check_port_available,
-            // Proxy
-            commands::start_proxy_server,
-            commands::stop_proxy_server,
-            commands::get_proxy_status,
-            commands::register_proxy_instance,
-            commands::start_proxy_instance,
-            commands::stop_proxy_instance,
-            commands::unregister_proxy_instance,
             // Logs
             commands::get_logs,
             commands::clear_logs,
