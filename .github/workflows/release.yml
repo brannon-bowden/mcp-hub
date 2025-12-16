@@ -242,6 +242,7 @@ jobs:
         with:
           tagName: ${{ needs.version-bump.outputs.tag_name || github.ref_name }}
           releaseName: MCP Hub ${{ needs.version-bump.outputs.tag_name || github.ref_name }}
+          includeUpdaterJson: true
           releaseBody: |
             ## What's New
 
