@@ -69,27 +69,27 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
         },
         RegistrySource {
             id: "smithery".to_string(),
-            name: "Smithery Registry".to_string(),
-            description: "Selection of popular servers from Smithery.ai's MCP server registry.".to_string(),
+            name: "Smithery (Sample)".to_string(),
+            description: "Sample of popular servers. Visit smithery.ai for 3000+ servers with cloud hosting.".to_string(),
             url: "https://smithery.ai".to_string(),
             icon: Some("hammer".to_string()),
-            server_count: None, // Curated subset
+            server_count: None,
         },
         RegistrySource {
             id: "glama".to_string(),
-            name: "Glama MCP Directory".to_string(),
-            description: "Selection of popular servers from Glama's MCP directory.".to_string(),
+            name: "Glama (Sample)".to_string(),
+            description: "Sample of popular servers. Visit glama.ai/mcp/servers for the full directory.".to_string(),
             url: "https://glama.ai/mcp/servers".to_string(),
             icon: Some("layout-grid".to_string()),
-            server_count: None, // Curated subset
+            server_count: None,
         },
         RegistrySource {
             id: "mcp-get".to_string(),
-            name: "mcp-get Registry".to_string(),
-            description: "Selection of popular servers from the mcp-get package manager.".to_string(),
+            name: "mcp-get (Sample)".to_string(),
+            description: "Sample of popular servers. Visit mcp-get.com for the full registry.".to_string(),
             url: "https://mcp-get.com".to_string(),
             icon: Some("download".to_string()),
-            server_count: None, // Curated subset
+            server_count: None,
         },
     ]
 }
