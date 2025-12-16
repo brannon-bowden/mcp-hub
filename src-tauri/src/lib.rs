@@ -28,6 +28,7 @@ pub fn run() {
 
     // Clone for setup hook
     let discovery_server_setup = discovery_server.clone();
+    let proxy_server_setup = proxy_server.clone();
     let db_for_setup = Database::new(
         services::config::get_database_path().expect("Failed to determine database path"),
     )
@@ -48,6 +49,7 @@ pub fn run() {
         .setup(move |_app| {
             // Initialize discovery services based on saved settings
             let discovery_server = discovery_server_setup.clone();
+            let proxy_server = proxy_server_setup.clone();
 
             tauri::async_runtime::spawn(async move {
                 // Load settings
@@ -86,6 +88,23 @@ pub fn run() {
                         }
                         Err(e) => {
                             log::error!("Failed to start discovery HTTP server: {}", e);
+                        }
+                    }
+                }
+
+                // Start proxy server if auto_start is enabled
+                if settings.proxy.auto_start {
+                    match services::proxy::start_proxy_server(settings.proxy.port).await {
+                        Ok(handle) => {
+                            let mut guard = proxy_server.write().await;
+                            *guard = Some(handle);
+                            log::info!(
+                                "MCP Proxy server auto-started on port {}",
+                                settings.proxy.port
+                            );
+                        }
+                        Err(e) => {
+                            log::error!("Failed to auto-start proxy server: {}", e);
                         }
                     }
                 }
