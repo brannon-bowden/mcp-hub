@@ -296,3 +296,74 @@ jobs:
           files: scripts/mcp-hub-stdio.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Verification job - ensures updater artifacts were generated
+  verify-updater:
+    needs: [version-bump, validate-versions, build]
+    if: always() && (needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for release assets to propagate
+        run: sleep 30
+
+      - name: Verify updater JSON exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.version-bump.outputs.tag_name || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Checking for latest.json in release $TAG_NAME..."
+
+          # Get release assets
+          ASSETS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG_NAME" \
+            | jq -r '.assets[].name')
+
+          echo "Release assets:"
+          echo "$ASSETS"
+          echo ""
+
+          # Check for latest.json
+          if echo "$ASSETS" | grep -q "latest.json"; then
+            echo "✅ latest.json found - updater will work!"
+          else
+            echo ""
+            echo "==============================================================="
+            echo "❌ ERROR: latest.json NOT FOUND IN RELEASE"
+            echo "==============================================================="
+            echo ""
+            echo "The auto-updater requires latest.json to function."
+            echo ""
+            echo "Possible causes:"
+            echo "  1. TAURI_SIGNING_PRIVATE_KEY secret is missing or invalid"
+            echo "  2. TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret is missing"
+            echo "  3. createUpdaterArtifacts is not set to true in tauri.conf.json"
+            echo ""
+            echo "To fix:"
+            echo "  - Verify secrets are set in Settings > Secrets > Actions"
+            echo "  - Ensure tauri.conf.json has: \"createUpdaterArtifacts\": true"
+            echo ""
+            echo "==============================================================="
+            exit 1
+          fi
+
+      - name: Verify signature files exist
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.version-bump.outputs.tag_name || github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Checking for .sig signature files..."
+
+          ASSETS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/releases/tags/$TAG_NAME" \
+            | jq -r '.assets[].name')
+
+          SIG_COUNT=$(echo "$ASSETS" | grep -c "\.sig$" || true)
+
+          if [ "$SIG_COUNT" -gt 0 ]; then
+            echo "✅ Found $SIG_COUNT signature file(s)"
+            echo "$ASSETS" | grep "\.sig$"
+          else
+            echo "⚠️  WARNING: No .sig files found - updates may not be verifiable"
+          fi
