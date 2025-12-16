@@ -515,16 +515,23 @@ pub fn get_stdio_script_path() -> Option<PathBuf> {
     {
         // On macOS production, the app structure is:
         // MCP Hub.app/Contents/MacOS/mcp-hub (main executable)
-        // MCP Hub.app/Contents/Resources/mcp-hub-stdio.mjs (bundled resource - Tauri flattens the path)
+        // MCP Hub.app/Contents/Resources/_up_/scripts/mcp-hub-stdio.mjs (bundled resource)
+        // Tauri v2 transforms "../" paths to "_up_" subdirectories
         let resources_dir = exe_dir.parent()?.join("Resources");
 
-        // Tauri bundles resources directly into Resources folder (flattens the path)
+        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
+        let script_path_up = resources_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path_up.exists() {
+            return Some(script_path_up);
+        }
+
+        // Fallback: check directly in Resources folder
         let script_path = resources_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
         }
 
-        // Also check in a scripts subdirectory in case bundling behavior changes
+        // Fallback: check in a scripts subdirectory
         let script_path_subdir = resources_dir.join("scripts").join("mcp-hub-stdio.mjs");
         if script_path_subdir.exists() {
             return Some(script_path_subdir);
@@ -534,6 +541,13 @@ pub fn get_stdio_script_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         // On Windows production, Tauri puts resources next to the executable
+        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
+        let script_path_up = exe_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path_up.exists() {
+            return Some(script_path_up);
+        }
+
+        // Fallback: check directly next to executable
         let script_path = exe_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
@@ -543,6 +557,13 @@ pub fn get_stdio_script_path() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         // On Linux production, Tauri puts resources next to the executable
+        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
+        let script_path_up = exe_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
+        if script_path_up.exists() {
+            return Some(script_path_up);
+        }
+
+        // Fallback: check directly next to executable
         let script_path = exe_dir.join("mcp-hub-stdio.mjs");
         if script_path.exists() {
             return Some(script_path);
