@@ -10,7 +10,7 @@ use crate::models::{
     AppSettings, ClientInstance, ClientType, ConfigBackup, DiscoverySettings, McpServer,
     ServerHealth, HealthStatus,
 };
-use crate::services::{self, config, discovery, proxy};
+use crate::services::{self, config, discovery};
 
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 500;
@@ -64,7 +64,6 @@ impl Default for LogBuffer {
 pub struct AppState {
     pub db: Mutex<Database>,
     pub discovery_server: Arc<RwLock<Option<discovery::DiscoveryServerHandle>>>,
-    pub proxy_server: Arc<RwLock<Option<proxy::ProxyServerHandle>>>,
     pub log_buffer: Mutex<LogBuffer>,
 }
 
@@ -202,8 +201,8 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
         .ok_or("Instance not found")?;
 
     if let Ok(mut buffer) = state.log_buffer.lock() {
-        buffer.add("DEBUG", format!("Instance '{}' use_proxy={}, config_path={}",
-            instance.name, instance.use_proxy, instance.config_path));
+        buffer.add("DEBUG", format!("Instance '{}' config_path={}",
+            instance.name, instance.config_path));
     }
 
     // Get enabled servers for this instance
@@ -218,40 +217,6 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
     // Get all servers
     let servers = db.get_all_servers().map_err(|e| e.to_string())?;
 
-    // Get app settings for proxy configuration
-    let settings: AppSettings = db
-        .get_setting("app_settings")
-        .ok()
-        .flatten()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
-
-    // Build proxy options if the instance uses proxy mode
-    let proxy_options = if instance.use_proxy {
-        if let Ok(mut buffer) = state.log_buffer.lock() {
-            buffer.add("INFO", format!("Proxy mode enabled, port={}, script_path={:?}",
-                settings.proxy.port, settings.proxy.stdio_script_path));
-        }
-
-        // Try to find the script path
-        let script_path = settings.proxy.stdio_script_path.clone()
-            .or_else(|| config::get_stdio_script_path().map(|p| p.to_string_lossy().to_string()));
-
-        if let Ok(mut buffer) = state.log_buffer.lock() {
-            buffer.add("DEBUG", format!("Resolved script path: {:?}", script_path));
-        }
-
-        Some(config::ProxySyncOptions {
-            proxy_port: settings.proxy.port,
-            stdio_script_path: settings.proxy.stdio_script_path.clone(),
-        })
-    } else {
-        if let Ok(mut buffer) = state.log_buffer.lock() {
-            buffer.add("DEBUG", "Proxy mode NOT enabled for this instance".to_string());
-        }
-        None
-    };
-
     // Get backup directory
     let backup_dir = config::get_backup_dir();
 
@@ -260,7 +225,6 @@ pub fn sync_instance(state: State<AppState>, instance_id: String) -> Result<Opti
         &instance,
         &servers,
         backup_dir.as_ref(),
-        proxy_options.as_ref(),
     );
 
     match &result {
@@ -716,149 +680,6 @@ pub struct DiscoveryStatus {
 #[tauri::command]
 pub async fn check_port_available(port: u16) -> bool {
     discovery::is_port_available(port).await
-}
-
-// ==================== Proxy Commands ====================
-
-/// Start the MCP proxy server
-#[tauri::command]
-pub async fn start_proxy_server(
-    state: State<'_, AppState>,
-    port: u16,
-) -> Result<(), String> {
-    let mut server_guard = state.proxy_server.write().await;
-
-    // Don't start if already running
-    if server_guard.is_some() {
-        return Err("Proxy server is already running".to_string());
-    }
-
-    let handle = proxy::start_proxy_server(port).await?;
-    *server_guard = Some(handle);
-
-    log::info!("MCP Proxy server started on port {}", port);
-    Ok(())
-}
-
-/// Stop the MCP proxy server
-#[tauri::command]
-pub async fn stop_proxy_server(state: State<'_, AppState>) -> Result<(), String> {
-    let mut server_guard = state.proxy_server.write().await;
-
-    if let Some(handle) = server_guard.take() {
-        handle.shutdown();
-        log::info!("MCP Proxy server stopped");
-    }
-
-    Ok(())
-}
-
-/// Get proxy server status
-#[tauri::command]
-pub async fn get_proxy_status(state: State<'_, AppState>) -> Result<ProxyStatus, String> {
-    let server_guard = state.proxy_server.read().await;
-    let running = server_guard.is_some();
-
-    // Get instance count if running
-    let instance_count = if let Some(ref handle) = *server_guard {
-        let proxy_state = handle.state();
-        let instances = proxy_state.instances.read().await;
-        instances.len()
-    } else {
-        0
-    };
-
-    Ok(ProxyStatus {
-        running,
-        port: if running { Some(24369) } else { None }, // TODO: Get actual port
-        instance_count,
-    })
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProxyStatus {
-    pub running: bool,
-    pub port: Option<u16>,
-    pub instance_count: usize,
-}
-
-/// Register an instance with the proxy server
-#[tauri::command]
-pub async fn register_proxy_instance(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<String, String> {
-    // Get instance and servers from DB
-    let (instance, servers) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let instance = db.get_instance(&instance_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("Instance not found")?;
-
-        let enabled_server_ids = db.get_enabled_servers_for_instance(&instance_id)
-            .map_err(|e| e.to_string())?;
-
-        let all_servers = db.get_all_servers().map_err(|e| e.to_string())?;
-        let servers: Vec<_> = all_servers
-            .into_iter()
-            .filter(|s| enabled_server_ids.contains(&s.id))
-            .collect();
-
-        (instance, servers)
-    };
-
-    let server_guard = state.proxy_server.read().await;
-    let handle = server_guard.as_ref()
-        .ok_or("Proxy server is not running")?;
-
-    let proxy_state = handle.state();
-    proxy::register_instance(&proxy_state, &instance, servers).await?;
-
-    // Return just the instance ID - frontend constructs the URL with correct port
-    Ok(instance_id)
-}
-
-/// Start servers for an instance (connects to actual MCP servers)
-#[tauri::command]
-pub async fn start_proxy_instance(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<(), String> {
-    let server_guard = state.proxy_server.read().await;
-    let handle = server_guard.as_ref()
-        .ok_or("Proxy server is not running")?;
-
-    let proxy_state = handle.state();
-    proxy::start_instance_servers(&proxy_state, &instance_id).await
-}
-
-/// Stop servers for an instance
-#[tauri::command]
-pub async fn stop_proxy_instance(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<(), String> {
-    let server_guard = state.proxy_server.read().await;
-    let handle = server_guard.as_ref()
-        .ok_or("Proxy server is not running")?;
-
-    let proxy_state = handle.state();
-    proxy::stop_instance_servers(&proxy_state, &instance_id).await
-}
-
-/// Unregister an instance from the proxy
-#[tauri::command]
-pub async fn unregister_proxy_instance(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<(), String> {
-    let server_guard = state.proxy_server.read().await;
-    let handle = server_guard.as_ref()
-        .ok_or("Proxy server is not running")?;
-
-    let proxy_state = handle.state();
-    proxy::unregister_instance(&proxy_state, &instance_id).await
 }
 
 // ==================== Log Commands ====================

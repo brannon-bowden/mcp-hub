@@ -250,9 +250,6 @@ pub struct ClientInstance {
     pub config_path: String,
     pub enabled_servers: Vec<String>,
     pub is_default: bool,
-    /// If true, sync will write only the mcp-hub-stdio bridge instead of individual servers
-    #[serde(default)]
-    pub use_proxy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_synced: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,7 +267,6 @@ impl ClientInstance {
             config_path,
             enabled_servers: Vec::new(),
             is_default: false,
-            use_proxy: false,
             last_synced: None,
             last_modified: None,
             created_at: Utc::now(),
@@ -336,9 +332,6 @@ pub struct AppSettings {
     /// Discovery settings
     #[serde(default)]
     pub discovery: DiscoverySettings,
-    /// Proxy settings
-    #[serde(default)]
-    pub proxy: ProxySettings,
 }
 
 impl Default for AppSettings {
@@ -349,7 +342,6 @@ impl Default for AppSettings {
             create_backups: true,
             backup_retention_days: 30,
             discovery: DiscoverySettings::default(),
-            proxy: ProxySettings::default(),
         }
     }
 }
@@ -372,32 +364,6 @@ impl Default for DiscoverySettings {
             mcp_directory_enabled: false,
             http_server_enabled: false,
             http_server_port: 24368,
-        }
-    }
-}
-
-/// MCP Proxy settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProxySettings {
-    /// Enable the MCP proxy server
-    pub enabled: bool,
-    /// Port for the proxy server (default: 24369)
-    pub port: u16,
-    /// Auto-start proxy on app launch
-    pub auto_start: bool,
-    /// Path to the mcp-hub-stdio.mjs script for stdio bridge mode
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stdio_script_path: Option<String>,
-}
-
-impl Default for ProxySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            port: 24369,
-            auto_start: false,
-            stdio_script_path: None,
         }
     }
 }

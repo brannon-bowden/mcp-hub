@@ -495,84 +495,6 @@ pub fn config_exists(path: &PathBuf) -> bool {
     path.exists() && path.is_file()
 }
 
-/// Get the path to the bundled mcp-hub-stdio.mjs script.
-/// This script is bundled with the app and located relative to the main executable.
-pub fn get_stdio_script_path() -> Option<PathBuf> {
-    // Get the path to the current executable
-    let exe_path = std::env::current_exe().ok()?;
-    let exe_dir = exe_path.parent()?;
-
-    // Development builds: executable is at src-tauri/target/debug/mcp-hub or src-tauri/target/release/mcp-hub
-    // We need to go up 3 levels to reach project root: debug -> target -> src-tauri -> project
-    if let Some(project_dir) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-        let dev_path = project_dir.join("scripts").join("mcp-hub-stdio.mjs");
-        if dev_path.exists() {
-            return Some(dev_path);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // On macOS production, the app structure is:
-        // MCP Hub.app/Contents/MacOS/mcp-hub (main executable)
-        // MCP Hub.app/Contents/Resources/_up_/scripts/mcp-hub-stdio.mjs (bundled resource)
-        // Tauri v2 transforms "../" paths to "_up_" subdirectories
-        let resources_dir = exe_dir.parent()?.join("Resources");
-
-        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
-        let script_path_up = resources_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
-        if script_path_up.exists() {
-            return Some(script_path_up);
-        }
-
-        // Fallback: check directly in Resources folder
-        let script_path = resources_dir.join("mcp-hub-stdio.mjs");
-        if script_path.exists() {
-            return Some(script_path);
-        }
-
-        // Fallback: check in a scripts subdirectory
-        let script_path_subdir = resources_dir.join("scripts").join("mcp-hub-stdio.mjs");
-        if script_path_subdir.exists() {
-            return Some(script_path_subdir);
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // On Windows production, Tauri puts resources next to the executable
-        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
-        let script_path_up = exe_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
-        if script_path_up.exists() {
-            return Some(script_path_up);
-        }
-
-        // Fallback: check directly next to executable
-        let script_path = exe_dir.join("mcp-hub-stdio.mjs");
-        if script_path.exists() {
-            return Some(script_path);
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux production, Tauri puts resources next to the executable
-        // Check _up_/scripts/ path first (Tauri v2 transforms ../scripts/ to _up_/scripts/)
-        let script_path_up = exe_dir.join("_up_").join("scripts").join("mcp-hub-stdio.mjs");
-        if script_path_up.exists() {
-            return Some(script_path_up);
-        }
-
-        // Fallback: check directly next to executable
-        let script_path = exe_dir.join("mcp-hub-stdio.mjs");
-        if script_path.exists() {
-            return Some(script_path);
-        }
-    }
-
-    None
-}
-
 /// Read and parse an MCP configuration file
 pub fn read_config_file(path: &PathBuf) -> Result<McpConfigFile, String> {
     if !config_exists(path) {
@@ -680,22 +602,11 @@ fn client_requires_merge_write(client_type: &ClientType) -> bool {
     )
 }
 
-/// Options for proxy mode sync
-pub struct ProxySyncOptions {
-    /// Port the proxy server is running on
-    pub proxy_port: u16,
-    /// Path to the mcp-hub-stdio.mjs script (if None, will be auto-detected)
-    pub stdio_script_path: Option<String>,
-}
-
 /// Convert servers to MCP config format and write to instance config file.
-/// If `instance.use_proxy` is true and `proxy_options` is provided, writes only
-/// the mcp-hub-stdio bridge entry instead of individual servers.
 pub fn sync_servers_to_instance(
     instance: &ClientInstance,
     servers: &[McpServer],
     backup_dir: Option<&PathBuf>,
-    proxy_options: Option<&ProxySyncOptions>,
 ) -> Result<Option<PathBuf>, String> {
     let config_path = PathBuf::from(&instance.config_path);
     let mut backup_path = None;
@@ -710,40 +621,17 @@ pub fn sync_servers_to_instance(
     // Build the MCP servers map
     let mut mcp_servers = HashMap::new();
 
-    // Check if we should use proxy mode
-    if instance.use_proxy {
-        if let Some(opts) = proxy_options {
-            // Get the stdio script path
-            let script_path = opts.stdio_script_path.clone()
-                .or_else(|| get_stdio_script_path().map(|p| p.to_string_lossy().to_string()))
-                .ok_or_else(|| "Could not find mcp-hub-stdio.mjs script. Please ensure it is installed or specify the path in settings.".to_string())?;
-
-            // Build the proxy URL for this instance
-            let proxy_url = format!("http://localhost:{}/mcp/{}", opts.proxy_port, instance.id);
-
-            // Create a single entry for the proxy bridge using node to run the script
+    // Sync all enabled servers
+    for server in servers {
+        if instance.enabled_servers.contains(&server.id) {
             let entry = McpServerEntry {
-                command: "node".to_string(),
-                args: vec![script_path, "--url".to_string(), proxy_url],
-                env: HashMap::new(),
+                command: server.command.clone(),
+                args: server.args.clone(),
+                env: server.env.clone(),
             };
-            mcp_servers.insert("mcp-hub".to_string(), entry);
-        } else {
-            return Err("Proxy mode is enabled but proxy options were not provided. Is the proxy server running?".to_string());
-        }
-    } else {
-        // Standard mode: sync all enabled servers individually
-        for server in servers {
-            if instance.enabled_servers.contains(&server.id) {
-                let entry = McpServerEntry {
-                    command: server.command.clone(),
-                    args: server.args.clone(),
-                    env: server.env.clone(),
-                };
-                // Use server name as the key (sanitized)
-                let key = sanitize_server_name(&server.name);
-                mcp_servers.insert(key, entry);
-            }
+            // Use server name as the key (sanitized)
+            let key = sanitize_server_name(&server.name);
+            mcp_servers.insert(key, entry);
         }
     }
 
