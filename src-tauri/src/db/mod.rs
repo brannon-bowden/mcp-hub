@@ -7,6 +7,21 @@ use crate::models::{
     ClientInstance, ClientType, ConfigBackup, McpServer, ServerSource, SourceType,
 };
 
+/// A custom registry added by the user
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomRegistry {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    pub requires_auth: bool,
+    pub cached_data: Option<String>,
+    pub cached_at: Option<String>,
+    pub created_at: String,
+}
+
 pub struct Database {
     conn: Mutex<Connection>,
 }
@@ -562,6 +577,122 @@ impl Database {
             params![key, value],
         )?;
 
+        Ok(())
+    }
+
+    // ==================== Custom Registries ====================
+
+    pub fn create_custom_registry(&self, registry: &CustomRegistry) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO custom_registries (id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                registry.id,
+                registry.name,
+                registry.url,
+                registry.description,
+                registry.icon,
+                registry.requires_auth as i32,
+                registry.cached_data,
+                registry.cached_at,
+                registry.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_custom_registries(&self) -> SqlResult<Vec<CustomRegistry>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at
+             FROM custom_registries ORDER BY name",
+        )?;
+
+        let registries = stmt.query_map([], |row| {
+            Ok(CustomRegistry {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                url: row.get(2)?,
+                description: row.get(3)?,
+                icon: row.get(4)?,
+                requires_auth: row.get::<_, i32>(5)? != 0,
+                cached_data: row.get(6)?,
+                cached_at: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?;
+
+        registries.collect()
+    }
+
+    pub fn get_custom_registry(&self, id: &str) -> SqlResult<Option<CustomRegistry>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at
+             FROM custom_registries WHERE id = ?1",
+        )?;
+
+        let mut rows = stmt.query(params![id])?;
+
+        if let Some(row) = rows.next()? {
+            Ok(Some(CustomRegistry {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                url: row.get(2)?,
+                description: row.get(3)?,
+                icon: row.get(4)?,
+                requires_auth: row.get::<_, i32>(5)? != 0,
+                cached_data: row.get(6)?,
+                cached_at: row.get(7)?,
+                created_at: row.get(8)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn update_custom_registry(&self, registry: &CustomRegistry) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE custom_registries
+             SET name = ?2, url = ?3, description = ?4, icon = ?5, requires_auth = ?6, cached_data = ?7, cached_at = ?8
+             WHERE id = ?1",
+            params![
+                registry.id,
+                registry.name,
+                registry.url,
+                registry.description,
+                registry.icon,
+                registry.requires_auth as i32,
+                registry.cached_data,
+                registry.cached_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_custom_registry(&self, id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM custom_registries WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn update_custom_registry_cache(
+        &self,
+        id: &str,
+        cached_data: &str,
+        cached_at: &str,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE custom_registries SET cached_data = ?2, cached_at = ?3 WHERE id = ?1",
+            params![id, cached_data, cached_at],
+        )?;
         Ok(())
     }
 }
