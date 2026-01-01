@@ -455,12 +455,46 @@ pub fn read_config_file(path: String) -> Result<crate::models::McpConfigFile, St
 // ==================== Registry Commands ====================
 
 #[tauri::command]
-pub fn get_registries() -> Vec<services::registry::RegistrySource> {
-    services::registry::get_available_registries()
+pub fn get_registries(state: State<AppState>) -> Result<Vec<services::registry::RegistrySource>, String> {
+    let mut registries = services::registry::get_available_registries();
+
+    // Add custom registries
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let custom = custom_registry::get_all_custom_registries(&db)?;
+
+    for reg in custom {
+        // Parse cached data to get server count
+        let server_count = reg.cached_data.as_ref()
+            .and_then(|data| serde_json::from_str::<Vec<services::registry::RegistryServer>>(data).ok())
+            .map(|servers| servers.len());
+
+        registries.push(services::registry::RegistrySource {
+            id: reg.id,
+            name: reg.name,
+            description: reg.description.unwrap_or_default(),
+            url: reg.url,
+            icon: reg.icon,
+            server_count,
+            is_custom: true,
+        });
+    }
+
+    Ok(registries)
 }
 
 #[tauri::command]
-pub async fn get_registry_servers(registry_id: String) -> Result<Vec<services::registry::RegistryServer>, String> {
+pub async fn get_registry_servers(
+    state: State<'_, AppState>,
+    registry_id: String,
+) -> Result<Vec<services::registry::RegistryServer>, String> {
+    // Check if this is a custom registry (UUID format: 8-4-4-4-12)
+    if registry_id.contains('-') && registry_id.len() == 36 {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let result = custom_registry::fetch_custom_registry_servers(&db, &registry_id, false)?;
+        return Ok(result.servers);
+    }
+
+    // Existing built-in registry handling
     services::registry::fetch_registry_servers(&registry_id).await
 }
 
