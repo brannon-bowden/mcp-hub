@@ -7,6 +7,9 @@ import type {
   DetectedClient,
   RegistrySource,
   RegistryServer,
+  CustomRegistry,
+  CustomRegistryFile,
+  FetchResult,
 } from "@/types";
 
 interface AppState {
@@ -59,6 +62,13 @@ interface AppState {
 
   // Config reading
   readConfigFile: (path: string) => Promise<{ mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> } | null>;
+
+  // Custom registries
+  addCustomRegistry: (url: string, name?: string, token?: string) => Promise<CustomRegistry>;
+  updateCustomRegistry: (id: string, url?: string, name?: string, token?: string) => Promise<CustomRegistry>;
+  deleteCustomRegistry: (id: string) => Promise<void>;
+  testCustomRegistryUrl: (url: string, token?: string) => Promise<CustomRegistryFile>;
+  refreshCustomRegistry: (id: string) => Promise<FetchResult>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -244,5 +254,26 @@ export const useStore = create<AppState>((set, get) => ({
     } catch {
       return null;
     }
+  },
+
+  // Custom registry actions
+  addCustomRegistry: async (url: string, name?: string, token?: string) => {
+    return invoke<CustomRegistry>("add_custom_registry", { url, name, token });
+  },
+
+  updateCustomRegistry: async (id: string, url?: string, name?: string, token?: string) => {
+    return invoke<CustomRegistry>("update_custom_registry", { id, url, name, token });
+  },
+
+  deleteCustomRegistry: async (id: string) => {
+    await invoke("delete_custom_registry", { id });
+  },
+
+  testCustomRegistryUrl: async (url: string, token?: string) => {
+    return invoke<CustomRegistryFile>("test_custom_registry_url", { url, token });
+  },
+
+  refreshCustomRegistry: async (id: string) => {
+    return invoke<FetchResult>("fetch_custom_registry_servers", { id, forceRefresh: true });
   },
 }));
