@@ -84,6 +84,19 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            -- Custom registries
+            CREATE TABLE IF NOT EXISTS custom_registries (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT,
+                icon TEXT,
+                requires_auth INTEGER NOT NULL DEFAULT 0,
+                cached_data TEXT,
+                cached_at TEXT,
+                created_at TEXT NOT NULL
+            );
             ",
         )?;
 
