@@ -132,6 +132,13 @@ pub fn run() {
             commands::get_registries,
             commands::get_registry_servers,
             commands::import_from_registry,
+            // Custom Registries
+            commands::add_custom_registry,
+            commands::update_custom_registry,
+            commands::delete_custom_registry,
+            commands::get_custom_registries,
+            commands::fetch_custom_registry_servers,
+            commands::test_custom_registry_url,
             // Discovery
             commands::get_discovery_settings,
             commands::update_discovery_settings,
