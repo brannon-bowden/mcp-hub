@@ -282,11 +282,24 @@ pub fn import_from_file(state: State<AppState>, path: String) -> Result<Vec<McpS
     let servers = config::import_servers_from_config(&path)?;
 
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    for server in &servers {
-        db.create_server(server).map_err(|e| e.to_string())?;
+
+    // Get existing server names for deduplication (case-insensitive)
+    let existing_servers = db.get_all_servers().map_err(|e| e.to_string())?;
+    let existing_names: std::collections::HashSet<String> = existing_servers
+        .iter()
+        .map(|s| s.name.to_lowercase())
+        .collect();
+
+    // Only import servers that don't already exist
+    let mut imported = Vec::new();
+    for server in servers {
+        if !existing_names.contains(&server.name.to_lowercase()) {
+            db.create_server(&server).map_err(|e| e.to_string())?;
+            imported.push(server);
+        }
     }
 
-    Ok(servers)
+    Ok(imported)
 }
 
 #[tauri::command]
@@ -505,12 +518,22 @@ pub fn import_from_registry(
     servers: Vec<services::registry::RegistryServer>,
 ) -> Result<Vec<McpServer>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let mut imported = Vec::new();
 
+    // Get existing server names for deduplication (case-insensitive)
+    let existing_servers = db.get_all_servers().map_err(|e| e.to_string())?;
+    let existing_names: std::collections::HashSet<String> = existing_servers
+        .iter()
+        .map(|s| s.name.to_lowercase())
+        .collect();
+
+    // Only import servers that don't already exist
+    let mut imported = Vec::new();
     for registry_server in servers {
         let server = services::registry::registry_server_to_mcp_server(&registry_server, &registry_id);
-        db.create_server(&server).map_err(|e| e.to_string())?;
-        imported.push(server);
+        if !existing_names.contains(&server.name.to_lowercase()) {
+            db.create_server(&server).map_err(|e| e.to_string())?;
+            imported.push(server);
+        }
     }
 
     Ok(imported)
