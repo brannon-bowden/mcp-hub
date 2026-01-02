@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useStore } from "@/store";
-import type { RegistryServer, RegistrySource, DetectedClient, ClientType } from "@/types";
+import type { RegistryServer, RegistrySource, DetectedClient, ClientType, CustomRegistry } from "@/types";
 import { CLIENT_TYPE_LABELS } from "@/types";
 import {
   FileJson,
@@ -37,7 +37,18 @@ import {
   Star,
   Hammer,
   LayoutGrid,
+  Plus,
+  RefreshCw,
+  Settings,
+  Trash2,
 } from "lucide-react";
+import { AddRegistryDialog } from "./AddRegistryDialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface ImportDialogProps {
   open: boolean;
@@ -88,6 +99,8 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     detectClients,
     detectedClients,
     servers,
+    refreshCustomRegistry,
+    deleteCustomRegistry,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState("registry");
@@ -102,6 +115,9 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
+  const [showAddRegistry, setShowAddRegistry] = useState(false);
+  const [editingRegistry, setEditingRegistry] = useState<CustomRegistry | undefined>();
+  const [refreshing, setRefreshing] = useState(false);
 
   // Load registries on open
   useEffect(() => {
@@ -316,6 +332,32 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     return servers.some((s) => s.name.toLowerCase() === name.toLowerCase());
   };
 
+  const handleRefreshRegistry = async () => {
+    if (!currentRegistry?.isCustom) return;
+
+    setRefreshing(true);
+    try {
+      await refreshCustomRegistry(selectedRegistry);
+      await loadRegistryServers(selectedRegistry);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleDeleteRegistry = async () => {
+    if (!currentRegistry?.isCustom) return;
+
+    try {
+      await deleteCustomRegistry(selectedRegistry);
+      await loadRegistries();
+      setSelectedRegistry("builtin");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete");
+    }
+  };
+
   const getClientLabel = (clientType: string) => {
     return CLIENT_TYPE_LABELS[clientType as ClientType] || clientType;
   };
@@ -364,30 +406,99 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
           <TabsContent value="registry" className="flex-1 flex flex-col min-h-0 mt-4">
             {/* Registry Selector */}
             <div className="mb-4">
-              <Select
-                value={selectedRegistry}
-                onValueChange={setSelectedRegistry}
-                disabled={loadingRegistries}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a registry" />
-                </SelectTrigger>
-                <SelectContent>
-                  {registries.map((registry) => (
-                    <SelectItem key={registry.id} value={registry.id}>
-                      <div className="flex items-center gap-2">
-                        {getRegistryIcon(registry.icon)}
-                        <span>{registry.name}</span>
-                        {registry.serverCount && (
-                          <span className="text-muted-foreground text-xs">
-                            ({registry.serverCount}+ servers)
-                          </span>
-                        )}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={selectedRegistry}
+                  onValueChange={setSelectedRegistry}
+                  disabled={loadingRegistries}
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="Select a registry" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {registries.filter(r => !r.isCustom).map((registry) => (
+                      <SelectItem key={registry.id} value={registry.id}>
+                        <div className="flex items-center gap-2">
+                          {getRegistryIcon(registry.icon)}
+                          <span>{registry.name}</span>
+                          {registry.serverCount && (
+                            <span className="text-muted-foreground text-xs">
+                              ({registry.serverCount}+ servers)
+                            </span>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                    {registries.some(r => r.isCustom) && (
+                      <>
+                        <div className="px-2 py-1.5 text-xs text-muted-foreground border-t mt-1 pt-2">
+                          Custom Registries
+                        </div>
+                        {registries.filter(r => r.isCustom).map((registry) => (
+                          <SelectItem key={registry.id} value={registry.id}>
+                            <div className="flex items-center gap-2">
+                              <Star className="h-4 w-4 text-yellow-500" />
+                              <span>{registry.name}</span>
+                              {registry.serverCount !== undefined && (
+                                <span className="text-muted-foreground text-xs">
+                                  ({registry.serverCount} servers)
+                                </span>
+                              )}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </>
+                    )}
+                  </SelectContent>
+                </Select>
+
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowAddRegistry(true)}
+                  title="Add custom registry"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+
+                {currentRegistry?.isCustom && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={handleRefreshRegistry}
+                      disabled={refreshing}
+                      title="Refresh registry"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+                    </Button>
+
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="icon" title="Registry settings">
+                          <Settings className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => {
+                          setEditingRegistry(currentRegistry as unknown as CustomRegistry);
+                          setShowAddRegistry(true);
+                        }}>
+                          Edit registry
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={handleDeleteRegistry}
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete registry
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                )}
+              </div>
+
               {currentRegistry && (
                 <p className="text-xs text-muted-foreground mt-1.5 px-1">
                   {currentRegistry.description}
@@ -609,6 +720,16 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
             )}
           </TabsContent>
         </Tabs>
+
+        <AddRegistryDialog
+          open={showAddRegistry}
+          onOpenChange={(open) => {
+            setShowAddRegistry(open);
+            if (!open) setEditingRegistry(undefined);
+          }}
+          editRegistry={editingRegistry}
+          onSuccess={loadRegistries}
+        />
       </DialogContent>
     </Dialog>
   );

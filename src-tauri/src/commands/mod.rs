@@ -10,7 +10,7 @@ use crate::models::{
     AppSettings, ClientInstance, ClientType, ConfigBackup, DiscoverySettings, McpServer,
     ServerHealth, HealthStatus,
 };
-use crate::services::{self, config, discovery};
+use crate::services::{self, config, custom_registry, discovery};
 
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 500;
@@ -455,12 +455,46 @@ pub fn read_config_file(path: String) -> Result<crate::models::McpConfigFile, St
 // ==================== Registry Commands ====================
 
 #[tauri::command]
-pub fn get_registries() -> Vec<services::registry::RegistrySource> {
-    services::registry::get_available_registries()
+pub fn get_registries(state: State<AppState>) -> Result<Vec<services::registry::RegistrySource>, String> {
+    let mut registries = services::registry::get_available_registries();
+
+    // Add custom registries
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let custom = custom_registry::get_all_custom_registries(&db)?;
+
+    for reg in custom {
+        // Parse cached data to get server count
+        let server_count = reg.cached_data.as_ref()
+            .and_then(|data| serde_json::from_str::<Vec<services::registry::RegistryServer>>(data).ok())
+            .map(|servers| servers.len());
+
+        registries.push(services::registry::RegistrySource {
+            id: reg.id,
+            name: reg.name,
+            description: reg.description.unwrap_or_default(),
+            url: reg.url,
+            icon: reg.icon,
+            server_count,
+            is_custom: true,
+        });
+    }
+
+    Ok(registries)
 }
 
 #[tauri::command]
-pub async fn get_registry_servers(registry_id: String) -> Result<Vec<services::registry::RegistryServer>, String> {
+pub async fn get_registry_servers(
+    state: State<'_, AppState>,
+    registry_id: String,
+) -> Result<Vec<services::registry::RegistryServer>, String> {
+    // Check if this is a custom registry (UUID format: 8-4-4-4-12)
+    if registry_id.contains('-') && registry_id.len() == 36 {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        let result = custom_registry::fetch_custom_registry_servers(&db, &registry_id, false)?;
+        return Ok(result.servers);
+    }
+
+    // Existing built-in registry handling
     services::registry::fetch_registry_servers(&registry_id).await
 }
 
@@ -480,6 +514,77 @@ pub fn import_from_registry(
     }
 
     Ok(imported)
+}
+
+// ==================== Custom Registry Commands ====================
+
+#[tauri::command]
+pub fn add_custom_registry(
+    state: State<AppState>,
+    url: String,
+    name: Option<String>,
+    token: Option<String>,
+) -> Result<crate::db::CustomRegistry, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    custom_registry::add_custom_registry(
+        &db,
+        &url,
+        name.as_deref(),
+        token.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn update_custom_registry(
+    state: State<AppState>,
+    id: String,
+    url: Option<String>,
+    name: Option<String>,
+    token: Option<String>,
+) -> Result<crate::db::CustomRegistry, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    custom_registry::update_custom_registry(
+        &db,
+        &id,
+        url.as_deref(),
+        name.as_deref(),
+        token.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn delete_custom_registry(
+    state: State<AppState>,
+    id: String,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    custom_registry::delete_custom_registry(&db, &id)
+}
+
+#[tauri::command]
+pub fn get_custom_registries(
+    state: State<AppState>,
+) -> Result<Vec<crate::db::CustomRegistry>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    custom_registry::get_all_custom_registries(&db)
+}
+
+#[tauri::command]
+pub fn fetch_custom_registry_servers(
+    state: State<AppState>,
+    id: String,
+    force_refresh: bool,
+) -> Result<custom_registry::FetchResult, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    custom_registry::fetch_custom_registry_servers(&db, &id, force_refresh)
+}
+
+#[tauri::command]
+pub fn test_custom_registry_url(
+    url: String,
+    token: Option<String>,
+) -> Result<custom_registry::CustomRegistryFile, String> {
+    custom_registry::test_registry_url(&url, token.as_deref())
 }
 
 // ==================== Discovery Commands ====================

@@ -38,6 +38,8 @@ pub struct RegistrySource {
     pub icon: Option<String>,
     #[serde(default)]
     pub server_count: Option<usize>,
+    #[serde(default)]
+    pub is_custom: bool,
 }
 
 /// Get the list of available registries
@@ -50,6 +52,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "builtin".to_string(),
             icon: Some("package".to_string()),
             server_count: None, // Dynamic - calculated from actual list
+            is_custom: false,
         },
         RegistrySource {
             id: "mcp-official".to_string(),
@@ -58,6 +61,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "https://github.com/modelcontextprotocol/servers".to_string(),
             icon: Some("shield-check".to_string()),
             server_count: Some(19),
+            is_custom: false,
         },
         RegistrySource {
             id: "awesome-mcp".to_string(),
@@ -66,6 +70,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "https://github.com/punkpeye/awesome-mcp-servers".to_string(),
             icon: Some("star".to_string()),
             server_count: None, // Dynamic - fetched from GitHub
+            is_custom: false,
         },
         RegistrySource {
             id: "smithery".to_string(),
@@ -74,6 +79,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "https://smithery.ai".to_string(),
             icon: Some("hammer".to_string()),
             server_count: None,
+            is_custom: false,
         },
         RegistrySource {
             id: "glama".to_string(),
@@ -82,6 +88,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "https://glama.ai/mcp/servers".to_string(),
             icon: Some("layout-grid".to_string()),
             server_count: None,
+            is_custom: false,
         },
         RegistrySource {
             id: "mcp-get".to_string(),
@@ -90,6 +97,7 @@ pub fn get_available_registries() -> Vec<RegistrySource> {
             url: "https://mcp-get.com".to_string(),
             icon: Some("download".to_string()),
             server_count: None,
+            is_custom: false,
         },
     ]
 }

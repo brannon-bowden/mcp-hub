@@ -216,6 +216,7 @@ export interface RegistrySource {
   url: string;
   icon?: string;
   serverCount?: number;
+  isCustom?: boolean;
 }
 
 export interface RegistryServer {
@@ -227,6 +228,31 @@ export interface RegistryServer {
   tags: string[];
   repository?: string;
   homepage?: string;
+}
+
+// Custom registry types
+export interface CustomRegistry {
+  id: string;
+  name: string;
+  url: string;
+  description?: string;
+  icon?: string;
+  requiresAuth: boolean;
+  cachedAt?: string;
+  createdAt: string;
+}
+
+export interface CustomRegistryFile {
+  name: string;
+  description?: string;
+  icon?: string;
+  servers: RegistryServer[];
+}
+
+export interface FetchResult {
+  servers: RegistryServer[];
+  fromCache: boolean;
+  cachedAt?: string;
 }
 
 // Log types
