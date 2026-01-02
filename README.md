@@ -22,6 +22,7 @@ A cross-platform desktop application for centralized management of Model Context
   - Smithery Registry (200+ servers)
   - Glama MCP Directory (150+ servers)
   - mcp-get Registry (80+ servers)
+- **Custom Registries**: Add your own registries from local files or remote URLs (including private GitHub repos)
 - **Environment Variables**: Configure server-specific environment variables
 - **Tags**: Organize servers with custom tags for easy filtering
 
@@ -156,6 +157,81 @@ Instances are visually grouped with their parent server and display an "instance
 3. Browse or search for servers
 4. Select servers to import
 5. Click **Import Selected**
+
+### Custom Registries
+
+You can create your own server registries to share MCP configurations within your team or organization.
+
+#### Adding a Custom Registry
+
+1. Click **Import** in the Servers view
+2. Click the **+** button next to the registry dropdown
+3. Enter the registry URL (local file path or remote URL)
+4. For private GitHub repos, add your GitHub token
+5. Click **Test Connection** to validate
+6. Click **Add Registry**
+
+#### Registry File Format
+
+Create a JSON file with the following structure:
+
+```json
+{
+  "name": "My Team Registry",
+  "description": "Internal MCP servers for our team",
+  "icon": "star",
+  "servers": [
+    {
+      "name": "internal-db-server",
+      "description": "Connect to our internal databases",
+      "command": "npx",
+      "args": ["-y", "@myorg/db-mcp-server"],
+      "env": {
+        "DB_HOST": "internal.example.com"
+      },
+      "tags": ["database", "internal"],
+      "repository": "https://github.com/myorg/db-mcp-server"
+    },
+    {
+      "name": "slack-integration",
+      "description": "Post messages to team Slack channels",
+      "command": "uvx",
+      "args": ["slack-mcp"],
+      "env": {},
+      "tags": ["messaging", "slack"],
+      "homepage": "https://example.com/docs/slack-mcp"
+    }
+  ]
+}
+```
+
+#### Registry File Fields
+
+| Field | Required | Description |
+|-------|:--------:|-------------|
+| `name` | Yes | Display name for the registry |
+| `description` | No | Brief description of the registry |
+| `icon` | No | Icon identifier (e.g., "star", "package", "shield-check") |
+| `servers` | Yes | Array of server definitions |
+
+#### Server Fields
+
+| Field | Required | Description |
+|-------|:--------:|-------------|
+| `name` | Yes | Unique server name |
+| `description` | No | What the server does |
+| `command` | Yes | Executable command (e.g., "npx", "uvx", "node") |
+| `args` | Yes | Array of command arguments |
+| `env` | No | Environment variables (object) |
+| `tags` | No | Array of tags for categorization |
+| `repository` | No | Source code repository URL |
+| `homepage` | No | Documentation or homepage URL |
+
+#### Hosting Options
+
+- **Local file**: Use a file path like `/path/to/registry.json`
+- **Public URL**: Host on any web server or public GitHub raw URL
+- **Private GitHub**: Use raw GitHub URL with a personal access token for authentication
 
 ### Setting Up Client Instances
 
