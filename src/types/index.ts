@@ -261,3 +261,15 @@ export interface LogEntry {
   level: string;
   message: string;
 }
+
+// Parsed server for paste import preview
+export interface ParsedServer {
+  id: string;                      // Temporary ID for React keys
+  originalName: string;            // Name from JSON or auto-generated
+  editedName: string;              // User-modified name
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  warnings: string[];              // Placeholder warnings
+  isValid: boolean;                // Name not empty, no duplicates
+}
