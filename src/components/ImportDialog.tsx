@@ -41,8 +41,13 @@ import {
   RefreshCw,
   Settings,
   Trash2,
+  Clipboard,
 } from "lucide-react";
 import { AddRegistryDialog } from "./AddRegistryDialog";
+import { ParsedServerCard } from "./ParsedServerCard";
+import { parseConfig, validateParsedServers } from "@/lib/parseConfig";
+import type { ParsedServer } from "@/types";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -101,6 +106,7 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     servers,
     refreshCustomRegistry,
     deleteCustomRegistry,
+    createServer,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState("registry");
@@ -119,6 +125,18 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
   const [editingRegistry, setEditingRegistry] = useState<CustomRegistry | undefined>();
   const [refreshing, setRefreshing] = useState(false);
 
+  // Paste tab state
+  const [pasteContent, setPasteContent] = useState("");
+  const [parsedServers, setParsedServers] = useState<ParsedServer[]>([]);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
+
+  // Memoized valid server count for paste tab
+  const validServerCount = useMemo(
+    () => parsedServers.filter((s) => s.isValid).length,
+    [parsedServers]
+  );
+
   // Load registries on open
   useEffect(() => {
     if (open) {
@@ -127,6 +145,10 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
       setSearchQuery("");
       setSelectedCategory("all");
       setSelectedServers(new Set());
+      // Reset paste tab
+      setPasteContent("");
+      setParsedServers([]);
+      setParseError(null);
     }
   }, [open]);
 
@@ -358,6 +380,103 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     }
   };
 
+  const handleParse = () => {
+    setIsParsing(true);
+    setParseError(null);
+
+    const result = parseConfig(pasteContent);
+
+    if (result.error) {
+      setParseError(result.error);
+      setParsedServers([]);
+    } else {
+      const validated = validateParsedServers(
+        result.servers,
+        servers.map((s) => s.name)
+      );
+      setParsedServers(validated);
+    }
+
+    setIsParsing(false);
+  };
+
+  const handleParsedNameChange = (id: string, name: string) => {
+    setParsedServers((prev) => {
+      const updated = prev.map((s) =>
+        s.id === id ? { ...s, editedName: name } : s
+      );
+      return validateParsedServers(
+        updated,
+        servers.map((s) => s.name)
+      );
+    });
+  };
+
+  const handleParsedEnvChange = (id: string, key: string, value: string) => {
+    setParsedServers((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? { ...s, env: { ...s.env, [key]: value } }
+          : s
+      )
+    );
+  };
+
+  const handleRemoveParsed = (id: string) => {
+    setParsedServers((prev) => {
+      const filtered = prev.filter((s) => s.id !== id);
+      return validateParsedServers(
+        filtered,
+        servers.map((s) => s.name)
+      );
+    });
+  };
+
+  const handleImportFromPaste = async () => {
+    const validServers = parsedServers.filter((s) => s.isValid);
+    if (validServers.length === 0) return;
+
+    setImporting(true);
+    setError(null);
+
+    try {
+      const now = new Date().toISOString();
+
+      for (const server of validServers) {
+        await createServer({
+          id: crypto.randomUUID(),
+          name: server.editedName,
+          command: server.command,
+          args: server.args,
+          env: server.env,
+          tags: [],
+          source: { sourceType: "imported" },
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      setSuccessMessage(`Successfully imported ${validServers.length} server(s)`);
+      setPasteContent("");
+      setParsedServers([]);
+
+      setTimeout(() => {
+        onOpenChange(false);
+        setSuccessMessage(null);
+      }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import servers");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleClearPaste = () => {
+    setPasteContent("");
+    setParsedServers([]);
+    setParseError(null);
+  };
+
   const getClientLabel = (clientType: string) => {
     return CLIENT_TYPE_LABELS[clientType as ClientType] || clientType;
   };
@@ -388,10 +507,14 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
         )}
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="registry" className="flex items-center gap-2">
               <Package className="h-4 w-4" />
               Registry
+            </TabsTrigger>
+            <TabsTrigger value="paste" className="flex items-center gap-2">
+              <Clipboard className="h-4 w-4" />
+              Paste
             </TabsTrigger>
             <TabsTrigger value="file" className="flex items-center gap-2">
               <FileJson className="h-4 w-4" />
@@ -663,6 +786,92 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
               >
                 {importing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Import {selectedServers.size > 0 && `(${selectedServers.size})`}
+              </Button>
+            </DialogFooter>
+          </TabsContent>
+
+          <TabsContent value="paste" className="flex-1 flex flex-col min-h-0 mt-4">
+            <div className="space-y-4">
+              {/* Paste textarea */}
+              <div className="space-y-2">
+                <Textarea
+                  placeholder={`Paste MCP server configuration JSON...
+
+Examples:
+• Full config: {"mcpServers": {"name": {"command": "npx", ...}}}
+• Named entry: {"my-server": {"command": "npx", "args": [...]}}
+• Single server: {"command": "npx", "args": ["-y", "@scope/package"]}`}
+                  value={pasteContent}
+                  onChange={(e) => setPasteContent(e.target.value)}
+                  className="min-h-[150px] font-mono text-sm"
+                />
+                <div className="flex justify-between">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearPaste}
+                    disabled={!pasteContent}
+                  >
+                    Clear
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleParse}
+                    disabled={!pasteContent.trim() || isParsing}
+                  >
+                    {isParsing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Parse JSON
+                  </Button>
+                </div>
+              </div>
+
+              {/* Parse error */}
+              {parseError && (
+                <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-destructive text-sm">
+                  {parseError}
+                </div>
+              )}
+
+              {/* Parsed servers preview */}
+              {parsedServers.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium">
+                      Parsed Servers ({parsedServers.length})
+                    </h4>
+                    <span className="text-sm text-muted-foreground">
+                      {validServerCount} ready to import
+                    </span>
+                  </div>
+                  <div className="space-y-3 max-h-[250px] overflow-y-auto pr-2">
+                    {parsedServers.map((server) => (
+                      <ParsedServerCard
+                        key={server.id}
+                        server={server}
+                        onNameChange={handleParsedNameChange}
+                        onEnvChange={handleParsedEnvChange}
+                        onRemove={handleRemoveParsed}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleImportFromPaste}
+                disabled={
+                  validServerCount === 0 || importing
+                }
+              >
+                {importing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Import{" "}
+                {validServerCount > 0 &&
+                  `(${validServerCount})`}
               </Button>
             </DialogFooter>
           </TabsContent>
