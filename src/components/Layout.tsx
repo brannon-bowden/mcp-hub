@@ -13,7 +13,7 @@ import { useStore } from "@/store";
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Servers", href: "/servers", icon: Server },
-  { name: "Instances", href: "/instances", icon: Layers },
+  { name: "Clients", href: "/instances", icon: Layers },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 
@@ -72,7 +72,7 @@ export function Layout() {
             disabled={instances.length === 0}
           >
             <RefreshCw className="w-4 h-4" />
-            Sync All Instances
+            Sync All Clients
           </Button>
         </div>
       </aside>
