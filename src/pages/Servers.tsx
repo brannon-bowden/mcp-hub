@@ -7,6 +7,7 @@ import {
   Download,
   Copy,
   Server as ServerIcon,
+  Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useStore } from "@/store";
 import { ImportDialog } from "@/components/ImportDialog";
+import { ExportDialog } from "@/components/ExportDialog";
 import type { McpServer } from "@/types";
 
 interface ServerFormData {
@@ -56,6 +58,7 @@ export function Servers() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<McpServer | null>(null);
   const [formData, setFormData] = useState<ServerFormData>(emptyFormData);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
@@ -266,6 +269,10 @@ export function Servers() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setIsExportDialogOpen(true)}>
+            <Upload className="w-4 h-4 mr-2" />
+            Export
+          </Button>
           <Button variant="outline" onClick={() => setIsImportDialogOpen(true)}>
             <Download className="w-4 h-4 mr-2" />
             Import
@@ -529,6 +536,13 @@ export function Servers() {
       <ImportDialog
         open={isImportDialogOpen}
         onOpenChange={setIsImportDialogOpen}
+      />
+
+      {/* Export Dialog */}
+      <ExportDialog
+        open={isExportDialogOpen}
+        onOpenChange={setIsExportDialogOpen}
+        servers={servers}
       />
     </div>
   );
