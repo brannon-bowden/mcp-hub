@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
@@ -46,6 +46,15 @@ export function ExportDialog({
   const [copying, setCopying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const selectAllRef = useRef<HTMLButtonElement>(null);
+
+  // Clear copied state after timeout with proper cleanup
+  useEffect(() => {
+    if (copied) {
+      const timeoutId = setTimeout(() => setCopied(false), 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [copied]);
 
   // Reset state when dialog opens
   useEffect(() => {
@@ -61,8 +70,15 @@ export function ExportDialog({
     [servers, selectedIds]
   );
 
-  const allSelected = selectedIds.size === servers.length;
+  const allSelected = selectedIds.size === servers.length && servers.length > 0;
   const someSelected = selectedIds.size > 0 && !allSelected;
+
+  // Handle indeterminate state for select-all checkbox
+  useEffect(() => {
+    if (selectAllRef.current) {
+      (selectAllRef.current as HTMLInputElement).indeterminate = someSelected;
+    }
+  }, [someSelected]);
 
   const toggleServer = (id: string) => {
     const newSelected = new Set(selectedIds);
@@ -91,8 +107,7 @@ export function ExportDialog({
         maskSensitiveValues: maskSensitive,
       });
       await copyToClipboard(json);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopied(true); // useEffect handles cleanup timeout
     } catch (error) {
       console.error("Failed to copy:", error);
     } finally {
@@ -141,11 +156,7 @@ export function ExportDialog({
             <Checkbox
               id="select-all"
               checked={allSelected}
-              ref={(el) => {
-                if (el) {
-                  (el as HTMLButtonElement & { indeterminate: boolean }).indeterminate = someSelected;
-                }
-              }}
+              ref={selectAllRef}
               onCheckedChange={toggleAll}
             />
             <Label htmlFor="select-all" className="font-medium">
