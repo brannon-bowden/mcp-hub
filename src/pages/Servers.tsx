@@ -76,6 +76,14 @@ export function Servers() {
   const [exportedServerId, setExportedServerId] = useState<string | null>(null);
   const [preSelectedExportIds, setPreSelectedExportIds] = useState<string[] | undefined>();
 
+  // Clear exported server feedback with proper cleanup
+  useEffect(() => {
+    if (exportedServerId) {
+      const timeoutId = setTimeout(() => setExportedServerId(null), 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [exportedServerId]);
+
   useEffect(() => {
     loadServers();
   }, [loadServers]);
@@ -278,8 +286,7 @@ export function Servers() {
     try {
       const json = exportToJson([server], { maskSensitiveValues: maskSensitive });
       await copyToClipboard(json);
-      setExportedServerId(server.id);
-      setTimeout(() => setExportedServerId(null), 2000);
+      setExportedServerId(server.id); // useEffect handles cleanup timeout
     } catch (error) {
       console.error("Failed to export:", error);
     }
