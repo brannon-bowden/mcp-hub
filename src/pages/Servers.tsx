@@ -120,7 +120,9 @@ export function Servers() {
 
   const handleOpenDialog = (server?: McpServer) => {
     if (server) {
+      // Editing an existing server - ensure clean state
       setEditingServer(server);
+      setDuplicatingFromId(null); // Clear any stale duplication state
       setFormData({
         name: server.name,
         description: server.description || "",
@@ -132,7 +134,9 @@ export function Servers() {
         tags: server.tags.join(", "),
       });
     } else {
+      // Adding a new server
       setEditingServer(null);
+      setDuplicatingFromId(null);
       setFormData(emptyFormData);
     }
     setIsDialogOpen(true);
@@ -143,6 +147,16 @@ export function Servers() {
     setEditingServer(null);
     setFormData(emptyFormData);
     setDuplicatingFromId(null);
+  };
+
+  // Handle dialog open state changes (including Escape/click-outside dismissal)
+  const handleDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      // Dialog is being closed - reset all editing state
+      handleCloseDialog();
+    } else {
+      setIsDialogOpen(true);
+    }
   };
 
   const handleSubmit = async () => {
@@ -386,7 +400,7 @@ export function Servers() {
       )}
 
       {/* Add/Edit Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <Dialog open={isDialogOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
