@@ -101,7 +101,7 @@ export function Dashboard() {
           <CardContent>
             <div className="text-2xl font-bold">{recentlySynced.length}</div>
             <p className="text-xs text-muted-foreground">
-              Instances up to date
+              Clients up to date
             </p>
           </CardContent>
         </Card>
@@ -113,7 +113,7 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{needsSync.length}</div>
-            <p className="text-xs text-muted-foreground">Instances pending</p>
+            <p className="text-xs text-muted-foreground">Clients pending</p>
           </CardContent>
         </Card>
       </div>
@@ -135,7 +135,7 @@ export function Dashboard() {
             <Button variant="outline" asChild>
               <Link to="/instances">
                 <Layers className="w-4 h-4 mr-2" />
-                Manage Instances
+                Manage Clients
               </Link>
             </Button>
             <Button
