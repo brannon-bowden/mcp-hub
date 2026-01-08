@@ -135,6 +135,9 @@ pub async fn fetch_registry_servers(registry_id: &str) -> Result<Vec<RegistrySer
 async fn fetch_awesome_mcp_from_github() -> Result<Vec<RegistryServer>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // Security: Explicit TLS configuration
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .https_only(true) // Prevent HTTP downgrade attacks
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 

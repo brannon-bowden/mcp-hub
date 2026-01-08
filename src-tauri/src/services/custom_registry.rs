@@ -323,6 +323,9 @@ fn fetch_remote_registry(url: &str, token: Option<&str>) -> Result<String, Strin
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // Security: Explicit TLS configuration
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .https_only(true) // Prevent HTTP downgrade attacks (also enforced by SSRF validation)
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
