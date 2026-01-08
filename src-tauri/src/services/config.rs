@@ -1,8 +1,90 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::models::{ClientInstance, ClientType, McpConfigFile, McpServer, McpServerEntry};
+
+/// Validate a path to prevent path traversal attacks
+///
+/// This function ensures that:
+/// 1. The path can be canonicalized (resolves symlinks, normalizes . and ..)
+/// 2. The resulting path is within an allowed directory (home or app data)
+/// 3. The path doesn't escape the allowed directories through symlinks
+fn validate_path_security(path: &Path) -> Result<PathBuf, String> {
+    // Get allowed base directories
+    let home_dir = dirs::home_dir()
+        .ok_or_else(|| "Cannot determine home directory".to_string())?;
+    let app_data_dir = get_app_data_dir()
+        .ok_or_else(|| "Cannot determine app data directory".to_string())?;
+
+    // For paths that don't exist yet, we need to check the parent
+    let path_to_check = if path.exists() {
+        path.to_path_buf()
+    } else {
+        // Check if parent exists and is valid
+        path.parent()
+            .ok_or_else(|| "Invalid path: no parent directory".to_string())?
+            .to_path_buf()
+    };
+
+    // Canonicalize to resolve symlinks and normalize the path
+    let canonical = if path_to_check.exists() {
+        path_to_check
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {}", e))?
+    } else {
+        // If path doesn't exist, ensure it's at least within home directory
+        // by checking the non-existing path doesn't contain traversal
+        let path_str = path.to_string_lossy();
+        if path_str.contains("..") {
+            return Err("Path contains directory traversal sequences".to_string());
+        }
+        // Return the original path if we can't canonicalize
+        path.to_path_buf()
+    };
+
+    // Check if path is within allowed directories
+    let canonical_str = canonical.to_string_lossy().to_string();
+    let home_str = home_dir.to_string_lossy().to_string();
+    let app_data_str = app_data_dir.to_string_lossy().to_string();
+
+    // The path must start with either home or app data directory
+    if !canonical_str.starts_with(&home_str) && !canonical_str.starts_with(&app_data_str) {
+        return Err(format!(
+            "Path '{}' is outside allowed directories (home: {}, app data: {})",
+            path.display(),
+            home_dir.display(),
+            app_data_dir.display()
+        ));
+    }
+
+    // Additional safety: block access to sensitive system files even within home
+    let sensitive_patterns = [
+        ".ssh/",
+        ".gnupg/",
+        ".aws/credentials",
+        ".netrc",
+        ".npmrc",  // May contain tokens
+        ".pypirc", // May contain tokens
+    ];
+
+    for pattern in sensitive_patterns {
+        if canonical_str.contains(pattern) {
+            return Err(format!(
+                "Access to sensitive path pattern '{}' is not allowed",
+                pattern
+            ));
+        }
+    }
+
+    // If the original path exists, return the canonical version
+    // Otherwise return the original (for new file creation)
+    if path.exists() {
+        Ok(canonical)
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
 
 /// Get the default configuration path for a client type on the current platform
 pub fn get_default_config_path(client_type: &ClientType) -> Option<PathBuf> {
@@ -497,13 +579,16 @@ pub fn config_exists(path: &PathBuf) -> bool {
 
 /// Read and parse an MCP configuration file
 pub fn read_config_file(path: &PathBuf) -> Result<McpConfigFile, String> {
-    if !config_exists(path) {
+    // Validate path to prevent path traversal attacks
+    let validated_path = validate_path_security(path)?;
+
+    if !config_exists(&validated_path) {
         return Ok(McpConfigFile {
             mcp_servers: HashMap::new(),
         });
     }
 
-    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config file: {}", e))?;
+    let content = fs::read_to_string(&validated_path).map_err(|e| format!("Failed to read config file: {}", e))?;
 
     // Handle empty files
     if content.trim().is_empty() {
@@ -517,15 +602,18 @@ pub fn read_config_file(path: &PathBuf) -> Result<McpConfigFile, String> {
 
 /// Write MCP configuration to a file (overwrites entire file)
 pub fn write_config_file(path: &PathBuf, config: &McpConfigFile) -> Result<(), String> {
+    // Validate path to prevent path traversal attacks
+    let validated_path = validate_path_security(path)?;
+
     // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = validated_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))
+    fs::write(&validated_path, content).map_err(|e| format!("Failed to write config file: {}", e))
 }
 
 /// Write MCP servers to a config file, preserving other fields in the file
@@ -534,14 +622,17 @@ pub fn write_mcp_servers_preserving_config(
     path: &PathBuf,
     mcp_servers: &HashMap<String, McpServerEntry>,
 ) -> Result<(), String> {
+    // Validate path to prevent path traversal attacks
+    let validated_path = validate_path_security(path)?;
+
     // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = validated_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
     // Read existing content or start with empty object
-    let mut existing: serde_json::Value = if path.exists() {
-        let content = fs::read_to_string(path)
+    let mut existing: serde_json::Value = if validated_path.exists() {
+        let content = fs::read_to_string(&validated_path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
         if content.trim().is_empty() {
             serde_json::json!({})
@@ -566,26 +657,30 @@ pub fn write_mcp_servers_preserving_config(
     let content = serde_json::to_string_pretty(&existing)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    fs::write(path, content).map_err(|e| format!("Failed to write config file: {}", e))
+    fs::write(&validated_path, content).map_err(|e| format!("Failed to write config file: {}", e))
 }
 
 /// Create a backup of a config file
 pub fn backup_config_file(path: &PathBuf, backup_dir: &PathBuf) -> Result<PathBuf, String> {
-    if !config_exists(path) {
+    // Validate both paths to prevent path traversal attacks
+    let validated_source = validate_path_security(path)?;
+    let validated_backup_dir = validate_path_security(backup_dir)?;
+
+    if !config_exists(&validated_source) {
         return Err("Config file does not exist".to_string());
     }
 
-    fs::create_dir_all(backup_dir).map_err(|e| format!("Failed to create backup directory: {}", e))?;
+    fs::create_dir_all(&validated_backup_dir).map_err(|e| format!("Failed to create backup directory: {}", e))?;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = path
+    let filename = validated_source
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("config");
     let backup_filename = format!("{}_{}.backup", filename, timestamp);
-    let backup_path = backup_dir.join(backup_filename);
+    let backup_path = validated_backup_dir.join(backup_filename);
 
-    fs::copy(path, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
+    fs::copy(&validated_source, &backup_path).map_err(|e| format!("Failed to create backup: {}", e))?;
 
     Ok(backup_path)
 }
