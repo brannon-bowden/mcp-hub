@@ -2,6 +2,9 @@
 //!
 //! This module provides structured error types that can be serialized to the frontend,
 //! enabling proper error handling with error codes and contextual information.
+//!
+//! Security: Error messages are sanitized to prevent information disclosure.
+//! Detailed errors are logged internally but generic messages are returned to users.
 
 use serde::Serialize;
 use thiserror::Error;
@@ -120,11 +123,14 @@ impl McpHubError {
 
     // Database errors
     pub fn db_read(err: impl std::fmt::Display) -> Self {
-        Self::new(ErrorCode::DbReadError, format!("Database read error: {}", err))
+        // Log detailed error internally, return sanitized message to user
+        log::error!("Database read error: {}", err);
+        Self::new(ErrorCode::DbReadError, "Failed to read from database")
     }
 
     pub fn db_write(err: impl std::fmt::Display) -> Self {
-        Self::new(ErrorCode::DbWriteError, format!("Database write error: {}", err))
+        log::error!("Database write error: {}", err);
+        Self::new(ErrorCode::DbWriteError, "Failed to write to database")
     }
 
     pub fn db_lock() -> Self {
@@ -178,62 +184,77 @@ impl McpHubError {
 
     // Config errors
     pub fn config_read(path: &str, err: impl std::fmt::Display) -> Self {
+        // Log detailed error with full path internally
+        log::error!("Config read error at {}: {}", path, err);
         Self::with_context(
             ErrorCode::ConfigReadError,
-            format!("Failed to read config: {}", err),
+            "Failed to read configuration file",
             ErrorContext {
                 resource_id: None,
                 resource_type: Some("config".to_string()),
-                path: Some(path.to_string()),
+                // Only include filename, not full path (may contain username)
+                path: std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
                 details: None,
             },
         )
     }
 
     pub fn config_write(path: &str, err: impl std::fmt::Display) -> Self {
+        log::error!("Config write error at {}: {}", path, err);
         Self::with_context(
             ErrorCode::ConfigWriteError,
-            format!("Failed to write config: {}", err),
+            "Failed to write configuration file",
             ErrorContext {
                 resource_id: None,
                 resource_type: Some("config".to_string()),
-                path: Some(path.to_string()),
+                path: std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
                 details: None,
             },
         )
     }
 
     pub fn config_parse(path: &str, err: impl std::fmt::Display) -> Self {
+        log::error!("Config parse error at {}: {}", path, err);
         Self::with_context(
             ErrorCode::ConfigParseError,
-            format!("Failed to parse config: {}", err),
+            "Failed to parse configuration file",
             ErrorContext {
                 resource_id: None,
                 resource_type: Some("config".to_string()),
-                path: Some(path.to_string()),
+                path: std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
                 details: None,
             },
         )
     }
 
     pub fn config_path_invalid(path: &str, reason: &str) -> Self {
+        log::warn!("Invalid config path {}: {}", path, reason);
         Self::with_context(
             ErrorCode::ConfigPathInvalid,
-            format!("Invalid config path: {}", reason),
+            "Invalid configuration path",
             ErrorContext {
                 resource_id: None,
                 resource_type: Some("config".to_string()),
-                path: Some(path.to_string()),
-                details: Some(reason.to_string()),
+                path: std::path::Path::new(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
+                details: None, // Don't expose reason which may contain paths
             },
         )
     }
 
     // Sync errors
     pub fn sync_failed(instance_id: &str, err: impl std::fmt::Display) -> Self {
+        log::error!("Sync failed for instance {}: {}", instance_id, err);
         Self::with_context(
             ErrorCode::SyncFailed,
-            format!("Sync failed: {}", err),
+            "Failed to sync configuration",
             ErrorContext {
                 resource_id: Some(instance_id.to_string()),
                 resource_type: Some("instance".to_string()),
@@ -245,9 +266,11 @@ impl McpHubError {
 
     // Registry errors
     pub fn registry_fetch(registry_id: &str, err: impl std::fmt::Display) -> Self {
+        // Don't expose network/HTTP errors which may contain URLs or tokens
+        log::error!("Registry fetch failed for {}: {}", registry_id, err);
         Self::with_context(
             ErrorCode::RegistryFetchError,
-            format!("Failed to fetch from registry: {}", err),
+            "Failed to fetch from registry",
             ErrorContext {
                 resource_id: Some(registry_id.to_string()),
                 resource_type: Some("registry".to_string()),
@@ -305,22 +328,25 @@ impl McpHubError {
     }
 
     pub fn credential_store_error(err: impl std::fmt::Display) -> Self {
+        // Log detailed keyring error internally, don't expose to user
+        log::error!("Credential store error: {}", err);
         Self::new(
             ErrorCode::CredentialStoreError,
-            format!("Failed to access credential store: {}", err),
+            "Failed to access secure credential storage",
         )
     }
 
     // Discovery errors
     pub fn discovery_start_failed(port: u16, err: impl std::fmt::Display) -> Self {
+        log::error!("Discovery server start failed on port {}: {}", port, err);
         Self::with_context(
             ErrorCode::DiscoveryStartFailed,
-            format!("Failed to start discovery server: {}", err),
+            format!("Failed to start discovery server on port {}", port),
             ErrorContext {
                 resource_id: None,
                 resource_type: Some("discovery".to_string()),
                 path: None,
-                details: Some(format!("port: {}", port)),
+                details: None, // Don't expose internal network errors
             },
         )
     }
@@ -345,7 +371,8 @@ impl McpHubError {
 
     // Internal errors
     pub fn internal(err: impl std::fmt::Display) -> Self {
-        Self::new(ErrorCode::InternalError, format!("Internal error: {}", err))
+        log::error!("Internal error: {}", err);
+        Self::new(ErrorCode::InternalError, "An internal error occurred")
     }
 }
 

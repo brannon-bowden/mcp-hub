@@ -3,6 +3,7 @@ use crate::services::credentials;
 use crate::services::registry::RegistryServer;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::net::{IpAddr, ToSocketAddrs};
 use url::Url;
@@ -14,6 +15,32 @@ const MAX_RESPONSE_SIZE: u64 = 1_048_576;
 
 /// Allowed URL schemes for custom registries
 const ALLOWED_SCHEMES: &[&str] = &["https"];
+
+/// Calculate SHA-256 hash of content for integrity verification
+fn calculate_content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Verify content integrity by comparing hash
+/// Returns Ok(()) if hash matches or no hash stored (legacy data)
+/// Returns Err with message if hash mismatch detected
+fn verify_content_integrity(content: &str, stored_hash: Option<&str>) -> Result<(), String> {
+    if let Some(expected_hash) = stored_hash {
+        let computed_hash = calculate_content_hash(content);
+        if computed_hash != expected_hash {
+            log::warn!(
+                "Content integrity check failed: expected {}, computed {}",
+                expected_hash,
+                computed_hash
+            );
+            return Err("Cached data integrity check failed. Data may be corrupted.".to_string());
+        }
+        log::debug!("Content integrity verified: {}", computed_hash);
+    }
+    Ok(())
+}
 
 /// Check if an IP address is in a private/internal range (SSRF protection)
 fn is_private_ip(ip: &IpAddr) -> bool {
@@ -162,9 +189,10 @@ pub fn add_custom_registry(
             .map_err(|e| format!("Failed to store token: {}", e))?;
     }
 
-    // Cache the fetched data
+    // Cache the fetched data with integrity hash
     let cached_data = serde_json::to_string(&registry_file.servers)
         .map_err(|e| format!("Failed to serialize servers: {}", e))?;
+    let content_hash = calculate_content_hash(&cached_data);
     let cached_at = Utc::now().to_rfc3339();
 
     let registry = CustomRegistry {
@@ -176,6 +204,7 @@ pub fn add_custom_registry(
         requires_auth,
         cached_data: Some(cached_data),
         cached_at: Some(cached_at),
+        content_hash: Some(content_hash),
         created_at: Utc::now().to_rfc3339(),
     };
 
@@ -226,8 +255,10 @@ pub fn update_custom_registry(
     if let Ok(registry_file) = fetch_registry_file(&registry.url, token_for_fetch.as_deref()) {
         let cached_data = serde_json::to_string(&registry_file.servers)
             .map_err(|e| format!("Failed to serialize servers: {}", e))?;
+        let content_hash = calculate_content_hash(&cached_data);
         registry.cached_data = Some(cached_data);
         registry.cached_at = Some(Utc::now().to_rfc3339());
+        registry.content_hash = Some(content_hash);
     }
 
     db.update_custom_registry(&registry)
@@ -260,13 +291,19 @@ pub fn fetch_custom_registry_servers(
     // Return cached data if available and not forcing refresh
     if !force_refresh {
         if let Some(cached_data) = &registry.cached_data {
-            let servers: Vec<RegistryServer> = serde_json::from_str(cached_data)
-                .map_err(|e| format!("Failed to parse cached data: {}", e))?;
-            return Ok(FetchResult {
-                servers,
-                from_cache: true,
-                cached_at: registry.cached_at.clone(),
-            });
+            // Verify cached data integrity before using
+            if let Err(e) = verify_content_integrity(cached_data, registry.content_hash.as_deref()) {
+                log::error!("Registry {} cache integrity check failed: {}", id, e);
+                // Fall through to fetch fresh data
+            } else {
+                let servers: Vec<RegistryServer> = serde_json::from_str(cached_data)
+                    .map_err(|e| format!("Failed to parse cached data: {}", e))?;
+                return Ok(FetchResult {
+                    servers,
+                    from_cache: true,
+                    cached_at: registry.cached_at.clone(),
+                });
+            }
         }
     }
 
@@ -279,12 +316,13 @@ pub fn fetch_custom_registry_servers(
 
     let registry_file = fetch_registry_file(&registry.url, token.as_deref())?;
 
-    // Update cache
+    // Update cache with integrity hash
     let cached_data = serde_json::to_string(&registry_file.servers)
         .map_err(|e| format!("Failed to serialize servers: {}", e))?;
+    let content_hash = calculate_content_hash(&cached_data);
     let cached_at = Utc::now().to_rfc3339();
 
-    db.update_custom_registry_cache(id, &cached_data, &cached_at)
+    db.update_custom_registry_cache(id, &cached_data, &cached_at, &content_hash)
         .map_err(|e| format!("Failed to update cache: {}", e))?;
 
     Ok(FetchResult {
