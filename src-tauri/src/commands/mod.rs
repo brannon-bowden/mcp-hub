@@ -6,6 +6,7 @@ use tauri::State;
 use tokio::sync::RwLock;
 
 use crate::db::Database;
+use crate::error::{McpHubError, McpResult};
 use crate::models::{
     AppSettings, ClientInstance, ClientType, ConfigBackup, DiscoverySettings, McpServer,
     ServerHealth, HealthStatus,
@@ -101,64 +102,66 @@ macro_rules! app_log {
 // ==================== Server Commands ====================
 
 #[tauri::command]
-pub fn get_servers(state: State<AppState>) -> Result<Vec<McpServer>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_all_servers().map_err(|e| e.to_string())
+pub fn get_servers(state: State<AppState>) -> McpResult<Vec<McpServer>> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.get_all_servers().map_err(McpHubError::db_read)
 }
 
 #[tauri::command]
-pub fn get_server(state: State<AppState>, id: String) -> Result<Option<McpServer>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_server(&id).map_err(|e| e.to_string())
+pub fn get_server(state: State<AppState>, id: String) -> McpResult<Option<McpServer>> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.get_server(&id).map_err(McpHubError::db_read)
 }
 
 #[tauri::command]
-pub fn create_server(state: State<AppState>, server: McpServer) -> Result<McpServer, String> {
+pub fn create_server(state: State<AppState>, server: McpServer) -> McpResult<McpServer> {
     // Validate command before creating
-    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)?;
+    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)
+        .map_err(|e| McpHubError::server_command_blocked(&server.command, &e))?;
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.create_server(&server).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.create_server(&server).map_err(McpHubError::db_write)?;
     Ok(server)
 }
 
 #[tauri::command]
-pub fn update_server(state: State<AppState>, server: McpServer) -> Result<McpServer, String> {
+pub fn update_server(state: State<AppState>, server: McpServer) -> McpResult<McpServer> {
     // Validate command before updating
-    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)?;
+    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)
+        .map_err(|e| McpHubError::server_command_blocked(&server.command, &e))?;
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.update_server(&server).map_err(|e| e.to_string())?;
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.update_server(&server).map_err(McpHubError::db_write)?;
     Ok(server)
 }
 
 #[tauri::command]
-pub fn delete_server(state: State<AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.delete_server(&id).map_err(|e| e.to_string())
+pub fn delete_server(state: State<AppState>, id: String) -> McpResult<()> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.delete_server(&id).map_err(McpHubError::db_write)
 }
 
 // ==================== Instance Commands ====================
 
 #[tauri::command]
-pub fn get_instances(state: State<AppState>) -> Result<Vec<ClientInstance>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_all_instances().map_err(|e| e.to_string())
+pub fn get_instances(state: State<AppState>) -> McpResult<Vec<ClientInstance>> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.get_all_instances().map_err(McpHubError::db_read)
 }
 
 #[tauri::command]
-pub fn get_instance(state: State<AppState>, id: String) -> Result<Option<ClientInstance>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_instance(&id).map_err(|e| e.to_string())
+pub fn get_instance(state: State<AppState>, id: String) -> McpResult<Option<ClientInstance>> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.get_instance(&id).map_err(McpHubError::db_read)
 }
 
 #[tauri::command]
 pub fn create_instance(
     state: State<AppState>,
     instance: ClientInstance,
-) -> Result<ClientInstance, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.create_instance(&instance).map_err(|e| e.to_string())?;
+) -> McpResult<ClientInstance> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.create_instance(&instance).map_err(McpHubError::db_write)?;
     Ok(instance)
 }
 
@@ -166,16 +169,16 @@ pub fn create_instance(
 pub fn update_instance(
     state: State<AppState>,
     instance: ClientInstance,
-) -> Result<ClientInstance, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.update_instance(&instance).map_err(|e| e.to_string())?;
+) -> McpResult<ClientInstance> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.update_instance(&instance).map_err(McpHubError::db_write)?;
     Ok(instance)
 }
 
 #[tauri::command]
-pub fn delete_instance(state: State<AppState>, id: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.delete_instance(&id).map_err(|e| e.to_string())
+pub fn delete_instance(state: State<AppState>, id: String) -> McpResult<()> {
+    let db = state.db.lock().map_err(|_| McpHubError::db_lock())?;
+    db.delete_instance(&id).map_err(McpHubError::db_write)
 }
 
 // ==================== Server-Instance Mapping Commands ====================

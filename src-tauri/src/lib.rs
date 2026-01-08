@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+pub mod error;
 mod models;
 pub mod services;
 
