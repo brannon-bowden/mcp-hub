@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::models::{ClientInstance, ClientType, McpConfigFile, McpServer, McpServerEntry};
@@ -84,6 +85,47 @@ fn validate_path_security(path: &Path) -> Result<PathBuf, String> {
     } else {
         Ok(path.to_path_buf())
     }
+}
+
+/// Write content to a file atomically
+///
+/// This prevents file corruption if the application crashes during write:
+/// 1. Write to a temporary file in the same directory
+/// 2. Sync the file to ensure data is flushed to disk
+/// 3. Rename the temp file to the target (atomic on most filesystems)
+fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path.parent()
+        .ok_or_else(|| "Invalid path: no parent directory".to_string())?;
+
+    // Create temp file in same directory (ensures same filesystem for atomic rename)
+    let temp_path = parent.join(format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config"),
+        std::process::id()
+    ));
+
+    // Write to temp file
+    let mut file = File::create(&temp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write to temp file: {}", e))?;
+
+    // Sync to disk before rename
+    file.sync_all()
+        .map_err(|e| format!("Failed to sync temp file: {}", e))?;
+
+    // Atomic rename
+    fs::rename(&temp_path, path)
+        .map_err(|e| {
+            // Clean up temp file on error
+            let _ = fs::remove_file(&temp_path);
+            format!("Failed to rename temp file: {}", e)
+        })?;
+
+    Ok(())
 }
 
 /// Get the default configuration path for a client type on the current platform
@@ -613,7 +655,7 @@ pub fn write_config_file(path: &PathBuf, config: &McpConfigFile) -> Result<(), S
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    fs::write(&validated_path, content).map_err(|e| format!("Failed to write config file: {}", e))
+    atomic_write(&validated_path, &content)
 }
 
 /// Write MCP servers to a config file, preserving other fields in the file
@@ -657,7 +699,7 @@ pub fn write_mcp_servers_preserving_config(
     let content = serde_json::to_string_pretty(&existing)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    fs::write(&validated_path, content).map_err(|e| format!("Failed to write config file: {}", e))
+    atomic_write(&validated_path, &content)
 }
 
 /// Create a backup of a config file
