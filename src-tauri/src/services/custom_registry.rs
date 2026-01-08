@@ -4,7 +4,124 @@ use crate::services::registry::RegistryServer;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::{IpAddr, ToSocketAddrs};
+use url::Url;
 use uuid::Uuid;
+
+/// Maximum response size for custom registry fetches (1MB)
+/// Prevents memory exhaustion from malicious or misconfigured endpoints
+const MAX_RESPONSE_SIZE: u64 = 1_048_576;
+
+/// Allowed URL schemes for custom registries
+const ALLOWED_SCHEMES: &[&str] = &["https"];
+
+/// Check if an IP address is in a private/internal range (SSRF protection)
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            // Loopback: 127.0.0.0/8
+            ipv4.is_loopback()
+            // Private: 10.0.0.0/8
+            || ipv4.octets()[0] == 10
+            // Private: 172.16.0.0/12
+            || (ipv4.octets()[0] == 172 && (16..=31).contains(&ipv4.octets()[1]))
+            // Private: 192.168.0.0/16
+            || (ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168)
+            // Link-local: 169.254.0.0/16 (includes cloud metadata at 169.254.169.254)
+            || (ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254)
+            // Broadcast
+            || ipv4.is_broadcast()
+            // Documentation ranges
+            || (ipv4.octets()[0] == 192 && ipv4.octets()[1] == 0 && ipv4.octets()[2] == 2)
+            || (ipv4.octets()[0] == 198 && ipv4.octets()[1] == 51 && ipv4.octets()[2] == 100)
+            || (ipv4.octets()[0] == 203 && ipv4.octets()[1] == 0 && ipv4.octets()[2] == 113)
+            // Unspecified
+            || ipv4.is_unspecified()
+        }
+        IpAddr::V6(ipv6) => {
+            // Loopback ::1
+            ipv6.is_loopback()
+            // Unspecified ::
+            || ipv6.is_unspecified()
+            // IPv4-mapped addresses - check the embedded IPv4
+            || {
+                let segments = ipv6.segments();
+                // ::ffff:x.x.x.x format
+                if segments[0..5] == [0, 0, 0, 0, 0] && segments[5] == 0xffff {
+                    let ipv4 = std::net::Ipv4Addr::new(
+                        (segments[6] >> 8) as u8,
+                        segments[6] as u8,
+                        (segments[7] >> 8) as u8,
+                        segments[7] as u8,
+                    );
+                    is_private_ip(&IpAddr::V4(ipv4))
+                } else {
+                    false
+                }
+            }
+            // Link-local fe80::/10
+            || (ipv6.segments()[0] & 0xffc0) == 0xfe80
+            // Unique local fc00::/7
+            || (ipv6.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
+}
+
+/// Validate a URL for SSRF protection
+/// Returns Ok(()) if the URL is safe to fetch, Err with reason otherwise
+fn validate_url_for_ssrf(url_str: &str) -> Result<(), String> {
+    let url = Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+
+    // Check scheme - only HTTPS allowed for remote registries
+    let scheme = url.scheme().to_lowercase();
+    if !ALLOWED_SCHEMES.contains(&scheme.as_str()) {
+        return Err(format!(
+            "Invalid URL scheme '{}'. Only HTTPS is allowed for remote registries.",
+            scheme
+        ));
+    }
+
+    // Get host
+    let host = url.host_str().ok_or("URL has no host")?;
+
+    // Block localhost variations
+    let host_lower = host.to_lowercase();
+    if host_lower == "localhost"
+        || host_lower == "localhost.localdomain"
+        || host_lower.ends_with(".localhost")
+    {
+        return Err("URLs pointing to localhost are not allowed".to_string());
+    }
+
+    // Block IP addresses directly in URL (force hostname usage for auditability)
+    // Also prevents direct specification of internal IPs
+    if url.host().map(|h| matches!(h, url::Host::Ipv4(_) | url::Host::Ipv6(_))).unwrap_or(false) {
+        return Err("Direct IP addresses are not allowed. Please use a hostname.".to_string());
+    }
+
+    // Resolve hostname and check all resolved IPs
+    let port = url.port().unwrap_or(443);
+    let socket_addrs: Vec<_> = format!("{}:{}", host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("Failed to resolve hostname '{}': {}", host, e))?
+        .collect();
+
+    if socket_addrs.is_empty() {
+        return Err(format!("Hostname '{}' did not resolve to any addresses", host));
+    }
+
+    // Check all resolved IPs - block if ANY resolve to private ranges
+    for addr in &socket_addrs {
+        if is_private_ip(&addr.ip()) {
+            return Err(format!(
+                "URL resolves to private/internal IP address ({}). This is not allowed for security reasons.",
+                addr.ip()
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 /// JSON structure for custom registry files
 #[derive(Debug, Deserialize, Serialize)]
@@ -185,9 +302,14 @@ pub fn get_all_custom_registries(db: &Database) -> Result<Vec<CustomRegistry>, S
 
 /// Fetch and parse a registry file from URL or local path
 fn fetch_registry_file(url: &str, token: Option<&str>) -> Result<CustomRegistryFile, String> {
-    let content = if url.starts_with("http://") || url.starts_with("https://") {
+    let content = if url.starts_with("https://") {
+        // Remote HTTPS URL - will be validated for SSRF in fetch_remote_registry
         fetch_remote_registry(url, token)?
+    } else if url.starts_with("http://") {
+        // Reject plain HTTP for security
+        return Err("HTTP URLs are not allowed for security reasons. Please use HTTPS.".to_string());
     } else {
+        // Local file path
         fetch_local_registry(url)?
     };
 
@@ -196,6 +318,9 @@ fn fetch_registry_file(url: &str, token: Option<&str>) -> Result<CustomRegistryF
 
 /// Fetch registry from remote URL
 fn fetch_remote_registry(url: &str, token: Option<&str>) -> Result<String, String> {
+    // Validate URL for SSRF protection before making the request
+    validate_url_for_ssrf(url)?;
+
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -224,9 +349,31 @@ fn fetch_remote_registry(url: &str, token: Option<&str>) -> Result<String, Strin
         return Err(format!("HTTP error: {}", response.status()));
     }
 
-    response
-        .text()
-        .map_err(|e| format!("Failed to read response: {}", e))
+    // Check Content-Length header if present to reject oversized responses early
+    if let Some(content_length) = response.content_length() {
+        if content_length > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large: {} bytes exceeds {} byte limit",
+                content_length, MAX_RESPONSE_SIZE
+            ));
+        }
+    }
+
+    // Read response with size limit to prevent memory exhaustion
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if bytes.len() as u64 > MAX_RESPONSE_SIZE {
+        return Err(format!(
+            "Response too large: {} bytes exceeds {} byte limit",
+            bytes.len(),
+            MAX_RESPONSE_SIZE
+        ));
+    }
+
+    String::from_utf8(bytes.to_vec())
+        .map_err(|e| format!("Invalid UTF-8 in response: {}", e))
 }
 
 /// Fetch registry from local file

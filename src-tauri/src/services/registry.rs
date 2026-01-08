@@ -6,6 +6,10 @@ use crate::models::{McpServer, ServerSource, SourceType};
 
 const AWESOME_MCP_README_URL: &str = "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md";
 
+/// Maximum response size for registry fetches (1MB)
+/// Prevents memory exhaustion from malicious or misconfigured endpoints
+const MAX_RESPONSE_SIZE: u64 = 1_048_576;
+
 /// A registry server entry from external sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,7 +133,11 @@ pub async fn fetch_registry_servers(registry_id: &str) -> Result<Vec<RegistrySer
 
 /// Fetch and parse the Awesome MCP Servers README from GitHub
 async fn fetch_awesome_mcp_from_github() -> Result<Vec<RegistryServer>, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
     let response = client
         .get(AWESOME_MCP_README_URL)
         .header("User-Agent", "MCP-Hub")
@@ -141,10 +149,32 @@ async fn fetch_awesome_mcp_from_github() -> Result<Vec<RegistryServer>, String> 
         return Err(format!("GitHub returned status: {}", response.status()));
     }
 
-    let readme_content = response
-        .text()
+    // Check Content-Length header if present to reject oversized responses early
+    if let Some(content_length) = response.content_length() {
+        if content_length > MAX_RESPONSE_SIZE {
+            return Err(format!(
+                "Response too large: {} bytes exceeds {} byte limit",
+                content_length, MAX_RESPONSE_SIZE
+            ));
+        }
+    }
+
+    // Read response with size limit to prevent memory exhaustion
+    let bytes = response
+        .bytes()
         .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if bytes.len() as u64 > MAX_RESPONSE_SIZE {
+        return Err(format!(
+            "Response too large: {} bytes exceeds {} byte limit",
+            bytes.len(),
+            MAX_RESPONSE_SIZE
+        ));
+    }
+
+    let readme_content = String::from_utf8(bytes.to_vec())
+        .map_err(|e| format!("Invalid UTF-8 in response: {}", e))?;
 
     Ok(parse_awesome_mcp_readme(&readme_content))
 }
