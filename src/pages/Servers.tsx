@@ -7,6 +7,9 @@ import {
   Download,
   Copy,
   Server as ServerIcon,
+  Upload,
+  Check,
+  MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,10 +29,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useStore } from "@/store";
 import { ImportDialog } from "@/components/ImportDialog";
+import { ExportDialog } from "@/components/ExportDialog";
+import { exportToJson, copyToClipboard } from "@/lib/exportConfig";
 import type { McpServer } from "@/types";
 
 interface ServerFormData {
@@ -56,10 +68,21 @@ export function Servers() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [editingServer, setEditingServer] = useState<McpServer | null>(null);
   const [formData, setFormData] = useState<ServerFormData>(emptyFormData);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [serverToDelete, setServerToDelete] = useState<McpServer | null>(null);
+  const [exportedServerId, setExportedServerId] = useState<string | null>(null);
+  const [preSelectedExportIds, setPreSelectedExportIds] = useState<string[] | undefined>();
+
+  // Clear exported server feedback with proper cleanup
+  useEffect(() => {
+    if (exportedServerId) {
+      const timeoutId = setTimeout(() => setExportedServerId(null), 2000);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [exportedServerId]);
 
   useEffect(() => {
     loadServers();
@@ -256,6 +279,19 @@ export function Servers() {
 
   const [duplicatingFromId, setDuplicatingFromId] = useState<string | null>(null);
 
+  const handleQuickExport = async (
+    server: McpServer,
+    maskSensitive: boolean
+  ) => {
+    try {
+      const json = exportToJson([server], { maskSensitiveValues: maskSensitive });
+      await copyToClipboard(json);
+      setExportedServerId(server.id); // useEffect handles cleanup timeout
+    } catch (error) {
+      console.error("Failed to export:", error);
+    }
+  };
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
@@ -266,6 +302,10 @@ export function Servers() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setIsExportDialogOpen(true)}>
+            <Upload className="w-4 h-4 mr-2" />
+            Export
+          </Button>
           <Button variant="outline" onClick={() => setIsImportDialogOpen(true)}>
             <Download className="w-4 h-4 mr-2" />
             Import
@@ -341,6 +381,43 @@ export function Servers() {
                     )}
                   </div>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Quick export"
+                        >
+                          {exportedServerId === server.id ? (
+                            <Check className="w-4 h-4 text-green-500" />
+                          ) : (
+                            <MoreVertical className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => handleQuickExport(server, true)}
+                        >
+                          Copy (masked)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => handleQuickExport(server, false)}
+                        >
+                          Copy (with values)
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => {
+                            setPreSelectedExportIds([server.id]);
+                            setIsExportDialogOpen(true);
+                          }}
+                        >
+                          Save to File...
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -529,6 +606,17 @@ export function Servers() {
       <ImportDialog
         open={isImportDialogOpen}
         onOpenChange={setIsImportDialogOpen}
+      />
+
+      {/* Export Dialog */}
+      <ExportDialog
+        open={isExportDialogOpen}
+        onOpenChange={(open) => {
+          setIsExportDialogOpen(open);
+          if (!open) setPreSelectedExportIds(undefined);
+        }}
+        servers={servers}
+        preSelectedIds={preSelectedExportIds}
       />
     </div>
   );
