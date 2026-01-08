@@ -771,18 +771,32 @@ pub async fn update_discovery_settings(
         (old_settings, servers)
     }; // db lock released here
 
-    // Handle ~/.mcp directory changes
+    // Handle ~/.mcp directory changes (run in blocking thread to avoid blocking async executor)
     if settings.mcp_directory_enabled && !old_settings.mcp_directory_enabled {
         // Enable: write all servers
-        discovery::write_mcp_directory(&servers)?;
+        let servers_clone = servers.clone();
+        tokio::task::spawn_blocking(move || {
+            discovery::write_mcp_directory(&servers_clone)
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))??;
         log::info!("MCP directory discovery enabled");
     } else if !settings.mcp_directory_enabled && old_settings.mcp_directory_enabled {
         // Disable: clear all managed files
-        discovery::clear_mcp_directory()?;
+        tokio::task::spawn_blocking(|| {
+            discovery::clear_mcp_directory()
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))??;
         log::info!("MCP directory discovery disabled");
     } else if settings.mcp_directory_enabled {
         // Still enabled: update files
-        discovery::write_mcp_directory(&servers)?;
+        let servers_clone = servers.clone();
+        tokio::task::spawn_blocking(move || {
+            discovery::write_mcp_directory(&servers_clone)
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))??;
     }
 
     // Handle HTTP server changes
@@ -846,9 +860,14 @@ pub async fn refresh_discovery(state: State<'_, AppState>) -> Result<(), String>
         (settings, servers)
     }; // db lock released here
 
-    // Update ~/.mcp directory if enabled
+    // Update ~/.mcp directory if enabled (run in blocking thread to avoid blocking async executor)
     if settings.discovery.mcp_directory_enabled {
-        discovery::write_mcp_directory(&servers)?;
+        let servers_clone = servers.clone();
+        tokio::task::spawn_blocking(move || {
+            discovery::write_mcp_directory(&servers_clone)
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))??;
         log::info!("Refreshed ~/.mcp directory with {} servers", servers.len());
     }
 

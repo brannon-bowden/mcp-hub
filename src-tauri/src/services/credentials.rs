@@ -18,8 +18,10 @@ fn get_installation_secret() -> Result<String, String> {
     }
 
     // Try to retrieve from keyring
-    let entry = Entry::new(SERVICE_NAME, INSTALLATION_SECRET_KEY)
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    let entry = Entry::new(SERVICE_NAME, INSTALLATION_SECRET_KEY).map_err(|e| {
+        log::error!("Failed to create keyring entry: {}", e);
+        "Failed to access credential storage".to_string()
+    })?;
 
     match entry.get_password() {
         Ok(secret) => {
@@ -38,14 +40,18 @@ fn get_installation_secret() -> Result<String, String> {
             );
 
             // Store in keyring
-            entry
-                .set_password(&secret)
-                .map_err(|e| format!("Failed to store installation secret: {}", e))?;
+            entry.set_password(&secret).map_err(|e| {
+                log::error!("Failed to store installation secret: {}", e);
+                "Failed to initialize credential storage".to_string()
+            })?;
 
             let _ = INSTALLATION_SECRET.set(secret.clone());
             Ok(secret)
         }
-        Err(e) => Err(format!("Failed to retrieve installation secret: {}", e)),
+        Err(e) => {
+            log::error!("Failed to retrieve installation secret: {}", e);
+            Err("Failed to access credential storage".to_string())
+        }
     }
 }
 
@@ -77,25 +83,33 @@ fn derive_storage_key(logical_key: &str) -> Result<String, String> {
 /// Keys are obfuscated to prevent enumeration attacks
 pub fn store_credential(key: &str, value: &str) -> Result<(), String> {
     let storage_key = derive_storage_key(key)?;
-    let entry = Entry::new(SERVICE_NAME, &storage_key)
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key).map_err(|e| {
+        log::error!("Failed to create keyring entry: {}", e);
+        "Failed to access credential storage".to_string()
+    })?;
 
-    entry
-        .set_password(value)
-        .map_err(|e| format!("Failed to store credential: {}", e))
+    entry.set_password(value).map_err(|e| {
+        log::error!("Failed to store credential: {}", e);
+        "Failed to store credential".to_string()
+    })
 }
 
 /// Retrieve a credential from the OS keyring
 /// Keys are obfuscated to prevent enumeration attacks
 pub fn get_credential(key: &str) -> Result<Option<String>, String> {
     let storage_key = derive_storage_key(key)?;
-    let entry = Entry::new(SERVICE_NAME, &storage_key)
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key).map_err(|e| {
+        log::error!("Failed to create keyring entry: {}", e);
+        "Failed to access credential storage".to_string()
+    })?;
 
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("Failed to retrieve credential: {}", e)),
+        Err(e) => {
+            log::error!("Failed to retrieve credential: {}", e);
+            Err("Failed to retrieve credential".to_string())
+        }
     }
 }
 
@@ -103,13 +117,18 @@ pub fn get_credential(key: &str) -> Result<Option<String>, String> {
 /// Keys are obfuscated to prevent enumeration attacks
 pub fn delete_credential(key: &str) -> Result<(), String> {
     let storage_key = derive_storage_key(key)?;
-    let entry = Entry::new(SERVICE_NAME, &storage_key)
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key).map_err(|e| {
+        log::error!("Failed to create keyring entry: {}", e);
+        "Failed to access credential storage".to_string()
+    })?;
 
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()), // Already deleted
-        Err(e) => Err(format!("Failed to delete credential: {}", e)),
+        Err(e) => {
+            log::error!("Failed to delete credential: {}", e);
+            Err("Failed to delete credential".to_string())
+        }
     }
 }
 

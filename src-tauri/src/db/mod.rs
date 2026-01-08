@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, Result as SqlResult};
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{params, OpenFlags, Result as SqlResult};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -24,11 +25,19 @@ pub struct CustomRegistry {
     pub requires_auth: bool,
     pub cached_data: Option<String>,
     pub cached_at: Option<String>,
+    /// SHA-256 hash of cached_data for integrity verification
+    pub content_hash: Option<String>,
     pub created_at: String,
 }
 
+/// Connection pool size for the database
+const POOL_SIZE: u32 = 10;
+
+/// Connection timeout in seconds
+const CONNECTION_TIMEOUT_SECS: u64 = 30;
+
 pub struct Database {
-    conn: Mutex<Connection>,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl Database {
@@ -38,7 +47,21 @@ impl Database {
             std::fs::create_dir_all(parent).ok();
         }
 
-        let conn = Connection::open(&path)?;
+        // Create connection manager with optimized SQLite flags
+        // SQLITE_OPEN_NO_MUTEX allows concurrent access since we're using r2d2 for pooling
+        let manager = SqliteConnectionManager::file(&path)
+            .with_flags(
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | OpenFlags::SQLITE_OPEN_CREATE
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            );
+
+        // Build the connection pool
+        let pool = Pool::builder()
+            .max_size(POOL_SIZE)
+            .connection_timeout(std::time::Duration::from_secs(CONNECTION_TIMEOUT_SECS))
+            .build(manager)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
 
         // Set restrictive file permissions on Unix (0600 = owner read/write only)
         // This prevents other users from reading the database which may contain
@@ -52,15 +75,20 @@ impl Database {
             }
         }
 
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
+        let db = Self { pool };
         db.init_schema()?;
         Ok(db)
     }
 
+    /// Get a connection from the pool
+    fn get_conn(&self) -> Result<PooledConnection<SqliteConnectionManager>, rusqlite::Error> {
+        self.pool
+            .get()
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
+    }
+
     fn init_schema(&self) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         // Run all pending migrations using the versioned migration system
         // This replaces the previous inline schema creation with a proper
@@ -73,7 +101,7 @@ impl Database {
     // ==================== Server CRUD ====================
 
     pub fn create_server(&self, server: &McpServer) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let args_json = serde_json::to_string(&server.args).unwrap_or_default();
         let env_json = serde_json::to_string(&server.env).unwrap_or_default();
@@ -112,7 +140,7 @@ impl Database {
     }
 
     pub fn get_server(&self, id: &str) -> SqlResult<Option<McpServer>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, name, description, command, args, env, tags, source_type, source_url, parent_id, created_at, updated_at
@@ -131,7 +159,7 @@ impl Database {
     }
 
     pub fn get_all_servers(&self) -> SqlResult<Vec<McpServer>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, name, description, command, args, env, tags, source_type, source_url, parent_id, created_at, updated_at
@@ -149,7 +177,7 @@ impl Database {
     }
 
     pub fn update_server(&self, server: &McpServer) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let args_json = serde_json::to_string(&server.args).unwrap_or_default();
         let env_json = serde_json::to_string(&server.env).unwrap_or_default();
@@ -187,7 +215,7 @@ impl Database {
     }
 
     pub fn delete_server(&self, id: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
         conn.execute("DELETE FROM servers WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -233,7 +261,7 @@ impl Database {
     // ==================== Client Instance CRUD ====================
 
     pub fn create_instance(&self, instance: &ClientInstance) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "INSERT INTO client_instances (id, name, client_type, config_path, is_default, last_synced, last_modified, created_at)
@@ -254,7 +282,7 @@ impl Database {
     }
 
     pub fn get_instance(&self, id: &str) -> SqlResult<Option<ClientInstance>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, name, client_type, config_path, is_default, last_synced, last_modified, created_at
@@ -271,7 +299,7 @@ impl Database {
     }
 
     pub fn get_all_instances(&self) -> SqlResult<Vec<ClientInstance>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, name, client_type, config_path, is_default, last_synced, last_modified, created_at
@@ -299,7 +327,7 @@ impl Database {
     }
 
     pub fn update_instance(&self, instance: &ClientInstance) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "UPDATE client_instances SET name = ?2, client_type = ?3, config_path = ?4,
@@ -319,7 +347,7 @@ impl Database {
     }
 
     pub fn delete_instance(&self, id: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
         conn.execute("DELETE FROM client_instances WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -362,7 +390,7 @@ impl Database {
         server_id: &str,
         enabled: bool,
     ) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "INSERT INTO instance_servers (instance_id, server_id, enabled) VALUES (?1, ?2, ?3)
@@ -381,7 +409,7 @@ impl Database {
     }
 
     pub fn get_enabled_servers_for_instance(&self, instance_id: &str) -> SqlResult<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT server_id FROM instance_servers WHERE instance_id = ?1 AND enabled = 1",
@@ -399,7 +427,7 @@ impl Database {
 
     #[allow(dead_code)]
     pub fn remove_server_from_instance(&self, instance_id: &str, server_id: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
         conn.execute(
             "DELETE FROM instance_servers WHERE instance_id = ?1 AND server_id = ?2",
             params![instance_id, server_id],
@@ -410,7 +438,7 @@ impl Database {
     // ==================== Backups ====================
 
     pub fn create_backup(&self, backup: &ConfigBackup) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "INSERT INTO backups (id, instance_id, backup_path, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -426,7 +454,7 @@ impl Database {
     }
 
     pub fn get_backups_for_instance(&self, instance_id: &str) -> SqlResult<Vec<ConfigBackup>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
             "SELECT id, instance_id, backup_path, created_at FROM backups
@@ -455,7 +483,7 @@ impl Database {
 
     #[allow(dead_code)]
     pub fn delete_old_backups(&self, instance_id: &str, keep_count: usize) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         // Get all backups sorted by date
         let mut stmt = conn.prepare(
@@ -480,7 +508,7 @@ impl Database {
     // ==================== Settings ====================
 
     pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
 
@@ -492,7 +520,7 @@ impl Database {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
@@ -506,11 +534,11 @@ impl Database {
     // ==================== Custom Registries ====================
 
     pub fn create_custom_registry(&self, registry: &CustomRegistry) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
-            "INSERT INTO custom_registries (id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO custom_registries (id, name, url, description, icon, requires_auth, cached_data, cached_at, content_hash, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 registry.id,
                 registry.name,
@@ -520,6 +548,7 @@ impl Database {
                 registry.requires_auth as i32,
                 registry.cached_data,
                 registry.cached_at,
+                registry.content_hash,
                 registry.created_at,
             ],
         )?;
@@ -527,10 +556,10 @@ impl Database {
     }
 
     pub fn get_custom_registries(&self) -> SqlResult<Vec<CustomRegistry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at
+            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, content_hash, created_at
              FROM custom_registries ORDER BY name",
         )?;
 
@@ -544,7 +573,8 @@ impl Database {
                 requires_auth: row.get::<_, i32>(5)? != 0,
                 cached_data: row.get(6)?,
                 cached_at: row.get(7)?,
-                created_at: row.get(8)?,
+                content_hash: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?;
 
@@ -552,10 +582,10 @@ impl Database {
     }
 
     pub fn get_custom_registry(&self, id: &str) -> SqlResult<Option<CustomRegistry>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, created_at
+            "SELECT id, name, url, description, icon, requires_auth, cached_data, cached_at, content_hash, created_at
              FROM custom_registries WHERE id = ?1",
         )?;
 
@@ -571,7 +601,8 @@ impl Database {
                 requires_auth: row.get::<_, i32>(5)? != 0,
                 cached_data: row.get(6)?,
                 cached_at: row.get(7)?,
-                created_at: row.get(8)?,
+                content_hash: row.get(8)?,
+                created_at: row.get(9)?,
             }))
         } else {
             Ok(None)
@@ -579,11 +610,11 @@ impl Database {
     }
 
     pub fn update_custom_registry(&self, registry: &CustomRegistry) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
 
         conn.execute(
             "UPDATE custom_registries
-             SET name = ?2, url = ?3, description = ?4, icon = ?5, requires_auth = ?6, cached_data = ?7, cached_at = ?8
+             SET name = ?2, url = ?3, description = ?4, icon = ?5, requires_auth = ?6, cached_data = ?7, cached_at = ?8, content_hash = ?9
              WHERE id = ?1",
             params![
                 registry.id,
@@ -594,13 +625,14 @@ impl Database {
                 registry.requires_auth as i32,
                 registry.cached_data,
                 registry.cached_at,
+                registry.content_hash,
             ],
         )?;
         Ok(())
     }
 
     pub fn delete_custom_registry(&self, id: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
         conn.execute("DELETE FROM custom_registries WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -610,11 +642,12 @@ impl Database {
         id: &str,
         cached_data: &str,
         cached_at: &str,
+        content_hash: &str,
     ) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.get_conn()?;
         conn.execute(
-            "UPDATE custom_registries SET cached_data = ?2, cached_at = ?3 WHERE id = ?1",
-            params![id, cached_data, cached_at],
+            "UPDATE custom_registries SET cached_data = ?2, cached_at = ?3, content_hash = ?4 WHERE id = ?1",
+            params![id, cached_data, cached_at, content_hash],
         )?;
         Ok(())
     }

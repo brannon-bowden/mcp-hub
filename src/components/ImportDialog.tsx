@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Dialog,
   DialogContent,
@@ -131,6 +132,10 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
   const [parseError, setParseError] = useState<string | null>(null);
   const [isParsing, setIsParsing] = useState(false);
 
+  // Virtualization refs
+  const registryListRef = useRef<HTMLDivElement>(null);
+  const clientListRef = useRef<HTMLDivElement>(null);
+
   // Memoized valid server count for paste tab
   const validServerCount = useMemo(
     () => parsedServers.filter((s) => s.isValid).length,
@@ -145,6 +150,8 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
       setSearchQuery("");
       setSelectedCategory("all");
       setSelectedServers(new Set());
+      // Reset registry servers to avoid stale data from previous session
+      setRegistryServers([]);
       // Reset paste tab
       setPasteContent("");
       setParsedServers([]);
@@ -178,6 +185,9 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
     setLoading(true);
     setError(null);
     setSelectedServers(new Set());
+    // Reset filters when switching registries to avoid stale filter state
+    setSearchQuery("");
+    setSelectedCategory("all");
     try {
       const servers = await getRegistryServers(registryId);
       setRegistryServers(servers);
@@ -254,6 +264,22 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
 
     return counts;
   }, [registryServers]);
+
+  // Virtualizer for registry server list
+  const registryVirtualizer = useVirtualizer({
+    count: filteredServers.length,
+    getScrollElement: () => registryListRef.current,
+    estimateSize: () => 100, // Approximate row height in pixels
+    overscan: 5, // Render 5 extra items above/below viewport
+  });
+
+  // Virtualizer for detected clients list
+  const clientVirtualizer = useVirtualizer({
+    count: detectedClients.length,
+    getScrollElement: () => clientListRef.current,
+    estimateSize: () => 72, // Approximate client row height
+    overscan: 3,
+  });
 
   const toggleServer = (name: string) => {
     const newSelected = new Set(selectedServers);
@@ -708,71 +734,96 @@ export function ImportDialog({ open, onOpenChange }: ImportDialogProps) {
                 </Button>
               </div>
             ) : (
-              <div className="flex-1 overflow-y-auto space-y-2 pr-2 min-h-0 max-h-[300px]">
-                {filteredServers.map((server) => {
-                  const alreadyAdded = isServerAlreadyAdded(server.name);
-                  return (
-                    <div
-                      key={server.name}
-                      className={`flex items-start gap-3 p-3 rounded-lg border ${
-                        alreadyAdded
-                          ? "bg-muted/50 opacity-60"
-                          : selectedServers.has(server.name)
-                          ? "border-primary bg-primary/5"
-                          : "hover:bg-muted/50"
-                      }`}
-                    >
-                      <Checkbox
-                        checked={selectedServers.has(server.name)}
-                        onCheckedChange={() => toggleServer(server.name)}
-                        disabled={alreadyAdded}
-                        className="mt-1"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium">{server.name}</span>
-                          {alreadyAdded && (
-                            <Badge variant="secondary" className="text-xs">
-                              Already added
-                            </Badge>
-                          )}
-                          {server.tags.includes("official") && (
-                            <Badge variant="outline" className="text-xs">
-                              Official
-                            </Badge>
-                          )}
-                        </div>
-                        {server.description && (
-                          <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                            {server.description}
-                          </p>
-                        )}
-                        <div className="flex items-center gap-2 mt-2 flex-wrap">
-                          {server.tags
-                            .filter((t) => t !== "official")
-                            .slice(0, 4)
-                            .map((tag) => (
-                              <Badge key={tag} variant="secondary" className="text-xs">
-                                {tag}
-                              </Badge>
-                            ))}
-                          {server.repository && (
-                            <a
-                              href={server.repository}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              Repo
-                            </a>
-                          )}
+              <div
+                ref={registryListRef}
+                className="flex-1 overflow-y-auto pr-2 min-h-0 max-h-[300px]"
+              >
+                <div
+                  style={{
+                    height: `${registryVirtualizer.getTotalSize()}px`,
+                    width: "100%",
+                    position: "relative",
+                  }}
+                >
+                  {registryVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const server = filteredServers[virtualRow.index];
+                    const alreadyAdded = isServerAlreadyAdded(server.name);
+                    return (
+                      <div
+                        key={server.name}
+                        data-index={virtualRow.index}
+                        ref={registryVirtualizer.measureElement}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
+                        className="pb-2"
+                      >
+                        <div
+                          className={`flex items-start gap-3 p-3 rounded-lg border ${
+                            alreadyAdded
+                              ? "bg-muted/50 opacity-60"
+                              : selectedServers.has(server.name)
+                              ? "border-primary bg-primary/5"
+                              : "hover:bg-muted/50"
+                          }`}
+                        >
+                          <Checkbox
+                            checked={selectedServers.has(server.name)}
+                            onCheckedChange={() => toggleServer(server.name)}
+                            disabled={alreadyAdded}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium">{server.name}</span>
+                              {alreadyAdded && (
+                                <Badge variant="secondary" className="text-xs">
+                                  Already added
+                                </Badge>
+                              )}
+                              {server.tags.includes("official") && (
+                                <Badge variant="outline" className="text-xs">
+                                  Official
+                                </Badge>
+                              )}
+                            </div>
+                            {server.description && (
+                              <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                                {server.description}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-2 mt-2 flex-wrap">
+                              {server.tags
+                                .filter((t) => t !== "official")
+                                .slice(0, 4)
+                                .map((tag) => (
+                                  <Badge key={tag} variant="secondary" className="text-xs">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              {server.repository && (
+                                <a
+                                  href={server.repository}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  Repo
+                                </a>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -900,31 +951,56 @@ Examples:
                 <p>No MCP clients detected on this system</p>
               </div>
             ) : (
-              <div className="flex-1 overflow-y-auto space-y-2 pr-2 min-h-0 max-h-[400px]">
-                {detectedClients.map((client) => (
-                  <div
-                    key={client.clientType}
-                    className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium">
-                        {getClientLabel(client.clientType)}
+              <div
+                ref={clientListRef}
+                className="flex-1 overflow-y-auto pr-2 min-h-0 max-h-[400px]"
+              >
+                <div
+                  style={{
+                    height: `${clientVirtualizer.getTotalSize()}px`,
+                    width: "100%",
+                    position: "relative",
+                  }}
+                >
+                  {clientVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const client = detectedClients[virtualRow.index];
+                    return (
+                      <div
+                        key={client.clientType}
+                        data-index={virtualRow.index}
+                        ref={clientVirtualizer.measureElement}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
+                        className="pb-2"
+                      >
+                        <div className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50">
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium">
+                              {getClientLabel(client.clientType)}
+                            </div>
+                            <div className="text-xs text-muted-foreground truncate">
+                              {client.configPath}
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={client.hasConfig ? "default" : "outline"}
+                            disabled={!client.hasConfig || importing}
+                            onClick={() => handleImportFromClient(client)}
+                            className="ml-3 flex-shrink-0"
+                          >
+                            {!client.hasConfig ? "No Config" : "Import"}
+                          </Button>
+                        </div>
                       </div>
-                      <div className="text-xs text-muted-foreground truncate">
-                        {client.configPath}
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant={client.hasConfig ? "default" : "outline"}
-                      disabled={!client.hasConfig || importing}
-                      onClick={() => handleImportFromClient(client)}
-                      className="ml-3 flex-shrink-0"
-                    >
-                      {!client.hasConfig ? "No Config" : "Import"}
-                    </Button>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
               </div>
             )}
           </TabsContent>

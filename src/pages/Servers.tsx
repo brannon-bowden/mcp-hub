@@ -41,6 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useStore } from "@/store";
 import { ImportDialog } from "@/components/ImportDialog";
 import { ExportDialog } from "@/components/ExportDialog";
+import { AddToClientsDialog } from "@/components/AddToClientsDialog";
 import { exportToJson, copyToClipboard } from "@/lib/exportConfig";
 import type { McpServer } from "@/types";
 
@@ -63,7 +64,7 @@ const emptyFormData: ServerFormData = {
 };
 
 export function Servers() {
-  const { servers, loadServers, createServer, updateServer, deleteServer } =
+  const { servers, loadServers, loadInstances, createServer, updateServer, deleteServer } =
     useStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -75,6 +76,8 @@ export function Servers() {
   const [serverToDelete, setServerToDelete] = useState<McpServer | null>(null);
   const [exportedServerId, setExportedServerId] = useState<string | null>(null);
   const [preSelectedExportIds, setPreSelectedExportIds] = useState<string[] | undefined>();
+  const [isAddToClientsDialogOpen, setIsAddToClientsDialogOpen] = useState(false);
+  const [newlyCreatedServer, setNewlyCreatedServer] = useState<McpServer | null>(null);
 
   // Clear exported server feedback with proper cleanup
   useEffect(() => {
@@ -86,7 +89,8 @@ export function Servers() {
 
   useEffect(() => {
     loadServers();
-  }, [loadServers]);
+    loadInstances();
+  }, [loadServers, loadInstances]);
 
   // Filter servers based on search query
   const matchesSearch = (server: McpServer) =>
@@ -217,8 +221,9 @@ export function Servers() {
           tags,
           updatedAt: now,
         });
+        handleCloseDialog();
       } else {
-        await createServer({
+        const newServer: McpServer = {
           id: crypto.randomUUID(),
           name: formData.name,
           description: formData.description || undefined,
@@ -230,10 +235,13 @@ export function Servers() {
           parentId: duplicatingFromId || undefined,
           createdAt: now,
           updatedAt: now,
-        });
+        };
+        const created = await createServer(newServer);
+        handleCloseDialog();
+        // Offer to add the new server to client instances
+        setNewlyCreatedServer(created);
+        setIsAddToClientsDialogOpen(true);
       }
-
-      handleCloseDialog();
     } catch (error) {
       console.error("Failed to save server:", error);
     }
@@ -617,6 +625,16 @@ export function Servers() {
         }}
         servers={servers}
         preSelectedIds={preSelectedExportIds}
+      />
+
+      {/* Add to Clients Dialog */}
+      <AddToClientsDialog
+        open={isAddToClientsDialogOpen}
+        onOpenChange={(open) => {
+          setIsAddToClientsDialogOpen(open);
+          if (!open) setNewlyCreatedServer(null);
+        }}
+        server={newlyCreatedServer}
       />
     </div>
   );

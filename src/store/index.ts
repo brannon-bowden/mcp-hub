@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { immer } from "zustand/middleware/immer";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   McpServer,
@@ -71,7 +72,8 @@ interface AppState {
   refreshCustomRegistry: (id: string) => Promise<FetchResult>;
 }
 
-export const useStore = create<AppState>((set, get) => ({
+export const useStore = create<AppState>()(
+  immer((set, get) => ({
   // Initial state
   servers: [],
   serversLoading: false,
@@ -98,47 +100,74 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Server actions
   loadServers: async () => {
-    set({ serversLoading: true, serversError: null });
+    set((state) => {
+      state.serversLoading = true;
+      state.serversError = null;
+    });
     try {
       const servers = await invoke<McpServer[]>("get_servers");
-      set({ servers, serversLoading: false });
+      set((state) => {
+        state.servers = servers;
+        state.serversLoading = false;
+      });
     } catch (error) {
-      set({
-        serversError: error instanceof Error ? error.message : String(error),
-        serversLoading: false,
+      set((state) => {
+        state.serversError = error instanceof Error ? error.message : String(error);
+        state.serversLoading = false;
       });
     }
   },
 
   createServer: async (server: McpServer) => {
     const created = await invoke<McpServer>("create_server", { server });
-    set({ servers: [...get().servers, created] });
+    set((state) => {
+      state.servers.push(created);
+    });
     return created;
   },
 
   updateServer: async (server: McpServer) => {
     const updated = await invoke<McpServer>("update_server", { server });
-    set({
-      servers: get().servers.map((s) => (s.id === updated.id ? updated : s)),
+    const now = new Date().toISOString();
+    set((state) => {
+      // Update server in-place
+      const serverIndex = state.servers.findIndex((s) => s.id === updated.id);
+      if (serverIndex !== -1) {
+        state.servers[serverIndex] = updated;
+      }
+      // Mark instances using this server as needing sync
+      for (const instance of state.instances) {
+        if (instance.enabledServers.includes(updated.id)) {
+          instance.lastModified = now;
+        }
+      }
     });
     return updated;
   },
 
   deleteServer: async (id: string) => {
     await invoke("delete_server", { id });
-    set({ servers: get().servers.filter((s) => s.id !== id) });
+    set((state) => {
+      state.servers = state.servers.filter((s) => s.id !== id);
+    });
   },
 
   // Instance actions
   loadInstances: async () => {
-    set({ instancesLoading: true, instancesError: null });
+    set((state) => {
+      state.instancesLoading = true;
+      state.instancesError = null;
+    });
     try {
       const instances = await invoke<ClientInstance[]>("get_instances");
-      set({ instances, instancesLoading: false });
+      set((state) => {
+        state.instances = instances;
+        state.instancesLoading = false;
+      });
     } catch (error) {
-      set({
-        instancesError: error instanceof Error ? error.message : String(error),
-        instancesLoading: false,
+      set((state) => {
+        state.instancesError = error instanceof Error ? error.message : String(error);
+        state.instancesLoading = false;
       });
     }
   },
@@ -147,7 +176,9 @@ export const useStore = create<AppState>((set, get) => ({
     const created = await invoke<ClientInstance>("create_instance", {
       instance,
     });
-    set({ instances: [...get().instances, created] });
+    set((state) => {
+      state.instances.push(created);
+    });
     return created;
   },
 
@@ -155,17 +186,20 @@ export const useStore = create<AppState>((set, get) => ({
     const updated = await invoke<ClientInstance>("update_instance", {
       instance,
     });
-    set({
-      instances: get().instances.map((i) =>
-        i.id === updated.id ? updated : i
-      ),
+    set((state) => {
+      const index = state.instances.findIndex((i) => i.id === updated.id);
+      if (index !== -1) {
+        state.instances[index] = updated;
+      }
     });
     return updated;
   },
 
   deleteInstance: async (id: string) => {
     await invoke("delete_instance", { id });
-    set({ instances: get().instances.filter((i) => i.id !== id) });
+    set((state) => {
+      state.instances = state.instances.filter((i) => i.id !== id);
+    });
   },
 
   setServerEnabled: async (
@@ -176,14 +210,16 @@ export const useStore = create<AppState>((set, get) => ({
     await invoke("set_server_enabled", { instanceId, serverId, enabled });
     // Update local state including lastModified to trigger "needs sync" status
     const now = new Date().toISOString();
-    set({
-      instances: get().instances.map((instance) => {
-        if (instance.id !== instanceId) return instance;
-        const enabledServers = enabled
-          ? [...instance.enabledServers, serverId]
-          : instance.enabledServers.filter((id) => id !== serverId);
-        return { ...instance, enabledServers, lastModified: now };
-      }),
+    set((state) => {
+      const instance = state.instances.find((i) => i.id === instanceId);
+      if (instance) {
+        if (enabled) {
+          instance.enabledServers.push(serverId);
+        } else {
+          instance.enabledServers = instance.enabledServers.filter((id) => id !== serverId);
+        }
+        instance.lastModified = now;
+      }
     });
   },
 
@@ -204,30 +240,35 @@ export const useStore = create<AppState>((set, get) => ({
 
   // Settings actions
   loadSettings: async () => {
-    set({ settingsLoading: true });
+    set((state) => { state.settingsLoading = true; });
     try {
       const settings = await invoke<AppSettings>("get_settings");
-      set({ settings, settingsLoading: false });
+      set((state) => {
+        state.settings = settings;
+        state.settingsLoading = false;
+      });
     } catch (error) {
       console.error("Failed to load settings:", error);
-      set({ settingsLoading: false });
+      set((state) => { state.settingsLoading = false; });
     }
   },
 
   saveSettings: async (settings: AppSettings) => {
     await invoke("save_settings", { settings });
-    set({ settings });
+    set((state) => { state.settings = settings; });
   },
 
   // Detection actions
   detectClients: async () => {
     const detectedClients = await invoke<DetectedClient[]>("detect_clients");
-    set({ detectedClients });
+    set((state) => { state.detectedClients = detectedClients; });
   },
 
   importFromFile: async (path: string) => {
     const servers = await invoke<McpServer[]>("import_from_file", { path });
-    set({ servers: [...get().servers, ...servers] });
+    set((state) => {
+      state.servers.push(...servers);
+    });
     return servers;
   },
 
@@ -242,7 +283,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   importFromRegistry: async (registryId: string, servers: RegistryServer[]) => {
     const imported = await invoke<McpServer[]>("import_from_registry", { registryId, servers });
-    set({ servers: [...get().servers, ...imported] });
+    set((state) => {
+      state.servers.push(...imported);
+    });
     return imported;
   },
 
@@ -276,4 +319,4 @@ export const useStore = create<AppState>((set, get) => ({
   refreshCustomRegistry: async (id: string) => {
     return invoke<FetchResult>("fetch_custom_registry_servers", { id, forceRefresh: true });
   },
-}));
+})));

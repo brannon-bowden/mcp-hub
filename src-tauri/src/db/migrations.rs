@@ -18,6 +18,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "add_indexes",
         include_str!("migrations/002_add_indexes.sql"),
     ),
+    (
+        3,
+        "add_content_hash",
+        include_str!("migrations/003_add_content_hash.sql"),
+    ),
 ];
 
 /// Run all pending migrations on the database
