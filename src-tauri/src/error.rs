@@ -434,13 +434,235 @@ mod tests {
         let err = McpHubError::config_read("/path/to/config.json", "file not found");
 
         assert!(err.context.is_some());
-        let ctx = err.context.unwrap();
-        assert_eq!(ctx.path, Some("/path/to/config.json".to_string()));
+        let ctx = err.context.as_ref().unwrap();
+        // Only filename should be included (not full path for security)
+        assert_eq!(ctx.path, Some("config.json".to_string()));
     }
 
     #[test]
     fn test_error_display() {
         let err = McpHubError::db_lock();
         assert_eq!(format!("{}", err), "Failed to acquire database lock");
+    }
+
+    // ==================== Error Code Coverage ====================
+
+    #[test]
+    fn test_database_errors() {
+        let err = McpHubError::db_read("connection lost");
+        assert!(matches!(err.code, ErrorCode::DbReadError));
+        assert_eq!(err.message, "Failed to read from database");
+
+        let err = McpHubError::db_write("disk full");
+        assert!(matches!(err.code, ErrorCode::DbWriteError));
+        assert_eq!(err.message, "Failed to write to database");
+
+        let err = McpHubError::db_lock();
+        assert!(matches!(err.code, ErrorCode::DbLockError));
+    }
+
+    #[test]
+    fn test_server_errors() {
+        let err = McpHubError::server_not_found("srv-123");
+        assert!(matches!(err.code, ErrorCode::ServerNotFound));
+        let ctx = err.context.as_ref().unwrap();
+        assert_eq!(ctx.resource_id, Some("srv-123".to_string()));
+        assert_eq!(ctx.resource_type, Some("server".to_string()));
+
+        let err = McpHubError::server_validation("Invalid command");
+        assert!(matches!(err.code, ErrorCode::ServerValidationError));
+        assert!(err.message.contains("Invalid command"));
+
+        let err = McpHubError::server_command_blocked("rm", "dangerous");
+        assert!(matches!(err.code, ErrorCode::ServerCommandBlocked));
+        assert!(err.message.contains("rm"));
+    }
+
+    #[test]
+    fn test_instance_errors() {
+        let err = McpHubError::instance_not_found("inst-456");
+        assert!(matches!(err.code, ErrorCode::InstanceNotFound));
+        let ctx = err.context.as_ref().unwrap();
+        assert_eq!(ctx.resource_id, Some("inst-456".to_string()));
+        assert_eq!(ctx.resource_type, Some("instance".to_string()));
+    }
+
+    #[test]
+    fn test_config_errors() {
+        let err = McpHubError::config_read("/home/user/config.json", "not found");
+        assert!(matches!(err.code, ErrorCode::ConfigReadError));
+        // Should sanitize path - only filename
+        let ctx = err.context.as_ref().unwrap();
+        assert_eq!(ctx.path, Some("config.json".to_string()));
+        assert!(!ctx.path.as_ref().unwrap().contains("/home/user"));
+
+        let err = McpHubError::config_write("/home/user/claude.json", "permission denied");
+        assert!(matches!(err.code, ErrorCode::ConfigWriteError));
+
+        let err = McpHubError::config_parse("/path/mcp.json", "invalid JSON");
+        assert!(matches!(err.code, ErrorCode::ConfigParseError));
+
+        let err = McpHubError::config_path_invalid("/etc/passwd", "outside allowed dirs");
+        assert!(matches!(err.code, ErrorCode::ConfigPathInvalid));
+    }
+
+    #[test]
+    fn test_sync_errors() {
+        let err = McpHubError::sync_failed("inst-123", "network error");
+        assert!(matches!(err.code, ErrorCode::SyncFailed));
+        let ctx = err.context.as_ref().unwrap();
+        assert_eq!(ctx.resource_id, Some("inst-123".to_string()));
+    }
+
+    #[test]
+    fn test_registry_errors() {
+        let err = McpHubError::registry_fetch("reg-1", "timeout");
+        assert!(matches!(err.code, ErrorCode::RegistryFetchError));
+        // Should not expose network error details
+        assert!(!err.message.contains("timeout"));
+
+        let err = McpHubError::registry_not_found("missing-reg");
+        assert!(matches!(err.code, ErrorCode::RegistryNotFound));
+
+        let err = McpHubError::registry_ssrf_blocked("http://127.0.0.1/api");
+        assert!(matches!(err.code, ErrorCode::RegistrySsrfBlocked));
+        assert!(err.message.contains("SSRF"));
+    }
+
+    #[test]
+    fn test_credential_errors() {
+        let err = McpHubError::credential_unavailable();
+        assert!(matches!(err.code, ErrorCode::CredentialStorageUnavailable));
+
+        let err = McpHubError::credential_not_found("api_key");
+        assert!(matches!(err.code, ErrorCode::CredentialNotFound));
+
+        let err = McpHubError::credential_store_error("keyring locked");
+        assert!(matches!(err.code, ErrorCode::CredentialStoreError));
+        // Should not expose internal error
+        assert!(!err.message.contains("keyring locked"));
+    }
+
+    #[test]
+    fn test_discovery_errors() {
+        let err = McpHubError::discovery_start_failed(8080, "port in use");
+        assert!(matches!(err.code, ErrorCode::DiscoveryStartFailed));
+        assert!(err.message.contains("8080"));
+    }
+
+    #[test]
+    fn test_validation_error() {
+        let err = McpHubError::validation("field required");
+        assert!(matches!(err.code, ErrorCode::ValidationFailed));
+    }
+
+    #[test]
+    fn test_internal_error() {
+        let err = McpHubError::internal("unexpected state");
+        assert!(matches!(err.code, ErrorCode::InternalError));
+    }
+
+    // ==================== Error Conversions ====================
+
+    #[test]
+    fn test_from_string() {
+        let err: McpHubError = "something went wrong".to_string().into();
+        assert!(matches!(err.code, ErrorCode::InternalError));
+        assert_eq!(err.message, "something went wrong");
+    }
+
+    #[test]
+    fn test_from_str() {
+        let err: McpHubError = "another error".into();
+        assert!(matches!(err.code, ErrorCode::InternalError));
+        assert_eq!(err.message, "another error");
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        use std::io::{Error, ErrorKind};
+        let io_err = Error::new(ErrorKind::NotFound, "file missing");
+        let err: McpHubError = io_err.into();
+        assert!(matches!(err.code, ErrorCode::ConfigReadError));
+        assert!(err.message.contains("I/O error"));
+    }
+
+    // ==================== JSON Serialization Tests ====================
+
+    #[test]
+    fn test_error_json_structure() {
+        let err = McpHubError::server_not_found("srv-1");
+        let json = serde_json::to_string(&err).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Verify camelCase field names
+        assert!(parsed.get("message").is_some());
+        assert!(parsed.get("code").is_some());
+        assert!(parsed.get("context").is_some());
+
+        // Verify code is SCREAMING_SNAKE_CASE
+        assert_eq!(parsed["code"].as_str().unwrap(), "SERVER_NOT_FOUND");
+    }
+
+    #[test]
+    fn test_error_json_without_context() {
+        let err = McpHubError::db_lock();
+        let json = serde_json::to_string(&err).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Context should not be present when None
+        assert!(parsed.get("context").is_none());
+    }
+
+    #[test]
+    fn test_error_context_json() {
+        let err = McpHubError::server_command_blocked("bash", "shell not allowed");
+        let json = serde_json::to_string(&err).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let ctx = &parsed["context"];
+        assert!(ctx.get("resourceId").is_none()); // Null fields are skipped
+        assert_eq!(ctx["resourceType"].as_str().unwrap(), "command");
+        assert!(ctx["details"].as_str().unwrap().contains("shell not allowed"));
+    }
+
+    // ==================== Security Tests ====================
+
+    #[test]
+    fn test_config_path_sanitization() {
+        // Full paths should be sanitized to just filename
+        let err = McpHubError::config_read("/Users/john.doe/.config/secret.json", "error");
+        let ctx = err.context.as_ref().unwrap();
+
+        // Should not contain username or full path
+        assert_eq!(ctx.path, Some("secret.json".to_string()));
+        assert!(!ctx.path.as_ref().unwrap().contains("john.doe"));
+        assert!(!ctx.path.as_ref().unwrap().contains("Users"));
+    }
+
+    #[test]
+    fn test_network_error_sanitization() {
+        // Network errors should not expose URLs or tokens
+        let err = McpHubError::registry_fetch(
+            "reg-1",
+            "HTTP 401 at https://api.example.com?token=secret123",
+        );
+
+        // The error message should be generic
+        assert_eq!(err.message, "Failed to fetch from registry");
+        assert!(!err.message.contains("secret"));
+        assert!(!err.message.contains("token"));
+        assert!(!err.message.contains("api.example.com"));
+    }
+
+    #[test]
+    fn test_credential_error_sanitization() {
+        let err = McpHubError::credential_store_error(
+            "keyring error: password for user@domain.com not found",
+        );
+
+        // Should not expose keyring details
+        assert!(!err.message.contains("user@domain.com"));
+        assert!(!err.message.contains("keyring error"));
     }
 }

@@ -652,3 +652,673 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a test database in a temporary directory
+    fn create_test_db() -> (Database, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let db = Database::new(db_path).expect("Failed to create database");
+        (db, temp_dir)
+    }
+
+    // ==================== Server CRUD Tests ====================
+
+    #[test]
+    fn test_create_and_get_server() {
+        let (db, _temp) = create_test_db();
+
+        let server = McpServer::new(
+            "Test Server".to_string(),
+            "npx".to_string(),
+            vec!["-y".to_string(), "@test/server".to_string()],
+        );
+
+        db.create_server(&server).expect("Failed to create server");
+
+        let retrieved = db
+            .get_server(&server.id)
+            .expect("Failed to get server")
+            .expect("Server not found");
+
+        assert_eq!(retrieved.id, server.id);
+        assert_eq!(retrieved.name, "Test Server");
+        assert_eq!(retrieved.command, "npx");
+        assert_eq!(retrieved.args, vec!["-y", "@test/server"]);
+    }
+
+    #[test]
+    fn test_get_nonexistent_server() {
+        let (db, _temp) = create_test_db();
+
+        let result = db
+            .get_server("nonexistent-id")
+            .expect("Query should succeed");
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_all_servers() {
+        let (db, _temp) = create_test_db();
+
+        // Create multiple servers
+        let server1 = McpServer::new(
+            "Alpha Server".to_string(),
+            "npx".to_string(),
+            vec!["-y".to_string(), "@test/alpha".to_string()],
+        );
+        let server2 = McpServer::new(
+            "Beta Server".to_string(),
+            "node".to_string(),
+            vec!["server.js".to_string()],
+        );
+
+        db.create_server(&server1).unwrap();
+        db.create_server(&server2).unwrap();
+
+        let servers = db.get_all_servers().expect("Failed to get servers");
+
+        assert_eq!(servers.len(), 2);
+        // Should be ordered by name
+        assert_eq!(servers[0].name, "Alpha Server");
+        assert_eq!(servers[1].name, "Beta Server");
+    }
+
+    #[test]
+    fn test_update_server() {
+        let (db, _temp) = create_test_db();
+
+        let mut server = McpServer::new(
+            "Original Name".to_string(),
+            "npx".to_string(),
+            vec![],
+        );
+        db.create_server(&server).unwrap();
+
+        // Update the server
+        server.name = "Updated Name".to_string();
+        server.description = Some("New description".to_string());
+        server.args = vec!["new-arg".to_string()];
+
+        db.update_server(&server).expect("Failed to update server");
+
+        let retrieved = db
+            .get_server(&server.id)
+            .unwrap()
+            .expect("Server not found");
+
+        assert_eq!(retrieved.name, "Updated Name");
+        assert_eq!(retrieved.description, Some("New description".to_string()));
+        assert_eq!(retrieved.args, vec!["new-arg"]);
+    }
+
+    #[test]
+    fn test_delete_server() {
+        let (db, _temp) = create_test_db();
+
+        let server = McpServer::new(
+            "To Delete".to_string(),
+            "npx".to_string(),
+            vec![],
+        );
+        db.create_server(&server).unwrap();
+
+        // Verify it exists
+        assert!(db.get_server(&server.id).unwrap().is_some());
+
+        // Delete it
+        db.delete_server(&server.id).expect("Failed to delete server");
+
+        // Verify it's gone
+        assert!(db.get_server(&server.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_server_with_env_vars() {
+        let (db, _temp) = create_test_db();
+
+        let mut server = McpServer::new(
+            "Server With Env".to_string(),
+            "node".to_string(),
+            vec!["server.js".to_string()],
+        );
+        server.env.insert("API_KEY".to_string(), "secret".to_string());
+        server.env.insert("DEBUG".to_string(), "true".to_string());
+
+        db.create_server(&server).unwrap();
+
+        let retrieved = db.get_server(&server.id).unwrap().unwrap();
+
+        assert_eq!(retrieved.env.len(), 2);
+        assert_eq!(retrieved.env.get("API_KEY"), Some(&"secret".to_string()));
+        assert_eq!(retrieved.env.get("DEBUG"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_server_with_tags() {
+        let (db, _temp) = create_test_db();
+
+        let mut server = McpServer::new(
+            "Tagged Server".to_string(),
+            "npx".to_string(),
+            vec![],
+        );
+        server.tags = vec!["database".to_string(), "sql".to_string()];
+
+        db.create_server(&server).unwrap();
+
+        let retrieved = db.get_server(&server.id).unwrap().unwrap();
+
+        assert_eq!(retrieved.tags, vec!["database", "sql"]);
+    }
+
+    #[test]
+    fn test_server_source_types() {
+        let (db, _temp) = create_test_db();
+
+        // Test manual source (default)
+        let manual = McpServer::new("Manual".to_string(), "cmd".to_string(), vec![]);
+        db.create_server(&manual).unwrap();
+        let retrieved = db.get_server(&manual.id).unwrap().unwrap();
+        assert_eq!(
+            retrieved.source.as_ref().unwrap().source_type,
+            SourceType::Manual
+        );
+
+        // Test registry source
+        let mut registry = McpServer::new("Registry".to_string(), "cmd".to_string(), vec![]);
+        registry.source = Some(ServerSource {
+            source_type: SourceType::Registry,
+            url: Some("https://registry.example.com/server".to_string()),
+        });
+        db.create_server(&registry).unwrap();
+        let retrieved = db.get_server(&registry.id).unwrap().unwrap();
+        assert_eq!(
+            retrieved.source.as_ref().unwrap().source_type,
+            SourceType::Registry
+        );
+        assert_eq!(
+            retrieved.source.as_ref().unwrap().url,
+            Some("https://registry.example.com/server".to_string())
+        );
+
+        // Test imported source
+        let mut imported = McpServer::new("Imported".to_string(), "cmd".to_string(), vec![]);
+        imported.source = Some(ServerSource {
+            source_type: SourceType::Imported,
+            url: Some("/path/to/config.json".to_string()),
+        });
+        db.create_server(&imported).unwrap();
+        let retrieved = db.get_server(&imported.id).unwrap().unwrap();
+        assert_eq!(
+            retrieved.source.as_ref().unwrap().source_type,
+            SourceType::Imported
+        );
+    }
+
+    // ==================== Instance CRUD Tests ====================
+
+    #[test]
+    fn test_create_and_get_instance() {
+        let (db, _temp) = create_test_db();
+
+        let mut instance = ClientInstance::new(
+            "Test Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path/to/config.json".to_string(),
+        );
+        instance.is_default = true;
+
+        db.create_instance(&instance)
+            .expect("Failed to create instance");
+
+        let retrieved = db
+            .get_instance(&instance.id)
+            .expect("Failed to get instance")
+            .expect("Instance not found");
+
+        assert_eq!(retrieved.id, instance.id);
+        assert_eq!(retrieved.name, "Test Instance");
+        assert_eq!(retrieved.client_type, ClientType::ClaudeDesktop);
+        assert_eq!(retrieved.config_path, "/path/to/config.json");
+        assert!(retrieved.is_default);
+    }
+
+    #[test]
+    fn test_get_all_instances() {
+        let (db, _temp) = create_test_db();
+
+        let instance1 = ClientInstance::new(
+            "Alpha Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path/a.json".to_string(),
+        );
+        let instance2 = ClientInstance::new(
+            "Beta Instance".to_string(),
+            ClientType::Cursor,
+            "/path/b.json".to_string(),
+        );
+
+        db.create_instance(&instance1).unwrap();
+        db.create_instance(&instance2).unwrap();
+
+        let instances = db.get_all_instances().expect("Failed to get instances");
+
+        assert_eq!(instances.len(), 2);
+        // Should be ordered by name
+        assert_eq!(instances[0].name, "Alpha Instance");
+        assert_eq!(instances[1].name, "Beta Instance");
+    }
+
+    #[test]
+    fn test_update_instance() {
+        let (db, _temp) = create_test_db();
+
+        let mut instance = ClientInstance::new(
+            "Original".to_string(),
+            ClientType::ClaudeDesktop,
+            "/old/path.json".to_string(),
+        );
+        db.create_instance(&instance).unwrap();
+
+        // Update
+        instance.name = "Updated".to_string();
+        instance.config_path = "/new/path.json".to_string();
+        instance.is_default = true;
+
+        db.update_instance(&instance).expect("Failed to update");
+
+        let retrieved = db.get_instance(&instance.id).unwrap().unwrap();
+
+        assert_eq!(retrieved.name, "Updated");
+        assert_eq!(retrieved.config_path, "/new/path.json");
+        assert!(retrieved.is_default);
+    }
+
+    #[test]
+    fn test_delete_instance() {
+        let (db, _temp) = create_test_db();
+
+        let instance = ClientInstance::new(
+            "To Delete".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+        db.create_instance(&instance).unwrap();
+
+        assert!(db.get_instance(&instance.id).unwrap().is_some());
+
+        db.delete_instance(&instance.id)
+            .expect("Failed to delete");
+
+        assert!(db.get_instance(&instance.id).unwrap().is_none());
+    }
+
+    // ==================== Instance-Server Mapping Tests ====================
+
+    #[test]
+    fn test_enable_server_for_instance() {
+        let (db, _temp) = create_test_db();
+
+        let server = McpServer::new("Server".to_string(), "cmd".to_string(), vec![]);
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+
+        db.create_server(&server).unwrap();
+        db.create_instance(&instance).unwrap();
+
+        // Enable server for instance
+        db.set_server_enabled_for_instance(&instance.id, &server.id, true)
+            .expect("Failed to enable server");
+
+        let enabled = db
+            .get_enabled_servers_for_instance(&instance.id)
+            .expect("Failed to get enabled servers");
+
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0], server.id);
+    }
+
+    #[test]
+    fn test_disable_server_for_instance() {
+        let (db, _temp) = create_test_db();
+
+        let server = McpServer::new("Server".to_string(), "cmd".to_string(), vec![]);
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+
+        db.create_server(&server).unwrap();
+        db.create_instance(&instance).unwrap();
+
+        // Enable then disable
+        db.set_server_enabled_for_instance(&instance.id, &server.id, true)
+            .unwrap();
+        db.set_server_enabled_for_instance(&instance.id, &server.id, false)
+            .unwrap();
+
+        let enabled = db
+            .get_enabled_servers_for_instance(&instance.id)
+            .unwrap();
+
+        assert!(enabled.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_servers_for_instance() {
+        let (db, _temp) = create_test_db();
+
+        let server1 = McpServer::new("Server1".to_string(), "cmd".to_string(), vec![]);
+        let server2 = McpServer::new("Server2".to_string(), "cmd".to_string(), vec![]);
+        let server3 = McpServer::new("Server3".to_string(), "cmd".to_string(), vec![]);
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+
+        db.create_server(&server1).unwrap();
+        db.create_server(&server2).unwrap();
+        db.create_server(&server3).unwrap();
+        db.create_instance(&instance).unwrap();
+
+        // Enable two servers
+        db.set_server_enabled_for_instance(&instance.id, &server1.id, true)
+            .unwrap();
+        db.set_server_enabled_for_instance(&instance.id, &server3.id, true)
+            .unwrap();
+
+        let enabled = db
+            .get_enabled_servers_for_instance(&instance.id)
+            .unwrap();
+
+        assert_eq!(enabled.len(), 2);
+        assert!(enabled.contains(&server1.id));
+        assert!(!enabled.contains(&server2.id));
+        assert!(enabled.contains(&server3.id));
+    }
+
+    #[test]
+    fn test_enabled_servers_included_in_get_all_instances() {
+        let (db, _temp) = create_test_db();
+
+        let server1 = McpServer::new("Server1".to_string(), "cmd".to_string(), vec![]);
+        let server2 = McpServer::new("Server2".to_string(), "cmd".to_string(), vec![]);
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+
+        db.create_server(&server1).unwrap();
+        db.create_server(&server2).unwrap();
+        db.create_instance(&instance).unwrap();
+
+        db.set_server_enabled_for_instance(&instance.id, &server1.id, true)
+            .unwrap();
+        db.set_server_enabled_for_instance(&instance.id, &server2.id, true)
+            .unwrap();
+
+        let instances = db.get_all_instances().unwrap();
+
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].enabled_servers.len(), 2);
+    }
+
+    // ==================== Backup Tests ====================
+
+    #[test]
+    fn test_create_and_get_backups() {
+        let (db, _temp) = create_test_db();
+
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+        db.create_instance(&instance).unwrap();
+
+        let backup = ConfigBackup::new(instance.id.clone(), "/backup/path.json".to_string());
+        db.create_backup(&backup).expect("Failed to create backup");
+
+        let backups = db
+            .get_backups_for_instance(&instance.id)
+            .expect("Failed to get backups");
+
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].instance_id, instance.id);
+        assert_eq!(backups[0].backup_path, "/backup/path.json");
+    }
+
+    #[test]
+    fn test_backups_ordered_by_date() {
+        let (db, _temp) = create_test_db();
+
+        let instance = ClientInstance::new(
+            "Instance".to_string(),
+            ClientType::ClaudeDesktop,
+            "/path.json".to_string(),
+        );
+        db.create_instance(&instance).unwrap();
+
+        // Create multiple backups
+        let backup1 = ConfigBackup::new(instance.id.clone(), "/backup/1.json".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let backup2 = ConfigBackup::new(instance.id.clone(), "/backup/2.json".to_string());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let backup3 = ConfigBackup::new(instance.id.clone(), "/backup/3.json".to_string());
+
+        db.create_backup(&backup1).unwrap();
+        db.create_backup(&backup2).unwrap();
+        db.create_backup(&backup3).unwrap();
+
+        let backups = db.get_backups_for_instance(&instance.id).unwrap();
+
+        assert_eq!(backups.len(), 3);
+        // Should be ordered by date descending (newest first)
+        assert_eq!(backups[0].backup_path, "/backup/3.json");
+        assert_eq!(backups[2].backup_path, "/backup/1.json");
+    }
+
+    // ==================== Settings Tests ====================
+
+    #[test]
+    fn test_get_and_set_setting() {
+        let (db, _temp) = create_test_db();
+
+        // Setting doesn't exist initially
+        let result = db.get_setting("theme").expect("Query should succeed");
+        assert!(result.is_none());
+
+        // Set the setting
+        db.set_setting("theme", "dark").expect("Failed to set");
+
+        // Get it back
+        let value = db.get_setting("theme").unwrap().unwrap();
+        assert_eq!(value, "dark");
+    }
+
+    #[test]
+    fn test_update_setting() {
+        let (db, _temp) = create_test_db();
+
+        db.set_setting("key", "value1").unwrap();
+        db.set_setting("key", "value2").unwrap();
+
+        let value = db.get_setting("key").unwrap().unwrap();
+        assert_eq!(value, "value2");
+    }
+
+    // ==================== Custom Registry Tests ====================
+
+    #[test]
+    fn test_create_and_get_custom_registry() {
+        let (db, _temp) = create_test_db();
+
+        let registry = CustomRegistry {
+            id: "reg-1".to_string(),
+            name: "My Registry".to_string(),
+            url: "https://registry.example.com".to_string(),
+            description: Some("Test registry".to_string()),
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        db.create_custom_registry(&registry)
+            .expect("Failed to create registry");
+
+        let retrieved = db
+            .get_custom_registry("reg-1")
+            .expect("Query failed")
+            .expect("Registry not found");
+
+        assert_eq!(retrieved.name, "My Registry");
+        assert_eq!(retrieved.url, "https://registry.example.com");
+        assert_eq!(retrieved.description, Some("Test registry".to_string()));
+    }
+
+    #[test]
+    fn test_update_custom_registry() {
+        let (db, _temp) = create_test_db();
+
+        let mut registry = CustomRegistry {
+            id: "reg-1".to_string(),
+            name: "Original".to_string(),
+            url: "https://old.url".to_string(),
+            description: None,
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        db.create_custom_registry(&registry).unwrap();
+
+        registry.name = "Updated".to_string();
+        registry.url = "https://new.url".to_string();
+        registry.requires_auth = true;
+
+        db.update_custom_registry(&registry)
+            .expect("Failed to update");
+
+        let retrieved = db.get_custom_registry("reg-1").unwrap().unwrap();
+
+        assert_eq!(retrieved.name, "Updated");
+        assert_eq!(retrieved.url, "https://new.url");
+        assert!(retrieved.requires_auth);
+    }
+
+    #[test]
+    fn test_delete_custom_registry() {
+        let (db, _temp) = create_test_db();
+
+        let registry = CustomRegistry {
+            id: "reg-1".to_string(),
+            name: "To Delete".to_string(),
+            url: "https://example.com".to_string(),
+            description: None,
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        db.create_custom_registry(&registry).unwrap();
+        assert!(db.get_custom_registry("reg-1").unwrap().is_some());
+
+        db.delete_custom_registry("reg-1").expect("Failed to delete");
+
+        assert!(db.get_custom_registry("reg-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_update_registry_cache() {
+        let (db, _temp) = create_test_db();
+
+        let registry = CustomRegistry {
+            id: "reg-1".to_string(),
+            name: "Cached".to_string(),
+            url: "https://example.com".to_string(),
+            description: None,
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        db.create_custom_registry(&registry).unwrap();
+
+        let cached_data = r#"{"servers": []}"#;
+        let cached_at = Utc::now().to_rfc3339();
+        let content_hash = "abc123";
+
+        db.update_custom_registry_cache("reg-1", cached_data, &cached_at, content_hash)
+            .expect("Failed to update cache");
+
+        let retrieved = db.get_custom_registry("reg-1").unwrap().unwrap();
+
+        assert_eq!(retrieved.cached_data, Some(cached_data.to_string()));
+        assert_eq!(retrieved.cached_at, Some(cached_at));
+        assert_eq!(retrieved.content_hash, Some(content_hash.to_string()));
+    }
+
+    #[test]
+    fn test_get_all_custom_registries() {
+        let (db, _temp) = create_test_db();
+
+        let registry1 = CustomRegistry {
+            id: "reg-1".to_string(),
+            name: "Alpha".to_string(),
+            url: "https://alpha.com".to_string(),
+            description: None,
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let registry2 = CustomRegistry {
+            id: "reg-2".to_string(),
+            name: "Beta".to_string(),
+            url: "https://beta.com".to_string(),
+            description: None,
+            icon: None,
+            requires_auth: false,
+            cached_data: None,
+            cached_at: None,
+            content_hash: None,
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        db.create_custom_registry(&registry1).unwrap();
+        db.create_custom_registry(&registry2).unwrap();
+
+        let registries = db.get_custom_registries().expect("Failed to get registries");
+
+        assert_eq!(registries.len(), 2);
+        // Should be ordered by name
+        assert_eq!(registries[0].name, "Alpha");
+        assert_eq!(registries[1].name, "Beta");
+    }
+}

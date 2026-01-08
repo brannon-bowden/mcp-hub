@@ -267,10 +267,15 @@ mod tests {
     }
 
     #[test]
-    fn test_command_with_path() {
+    fn test_command_with_unix_path() {
         assert!(is_command_allowed("/usr/local/bin/npx"));
-        assert!(is_command_allowed("C:\\Users\\node.exe"));
         assert!(!is_command_allowed("/bin/sh"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_command_with_windows_path() {
+        assert!(is_command_allowed("C:\\Users\\node.exe"));
     }
 
     #[test]
