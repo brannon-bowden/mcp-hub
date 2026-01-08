@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use log::{info, warn};
+use tokio::sync::RwLock;
 
 use crate::models::{McpServer, ServerSource, SourceType};
 
@@ -9,6 +12,23 @@ const AWESOME_MCP_README_URL: &str = "https://raw.githubusercontent.com/punkpeye
 /// Maximum response size for registry fetches (1MB)
 /// Prevents memory exhaustion from malicious or misconfigured endpoints
 const MAX_RESPONSE_SIZE: u64 = 1_048_576;
+
+/// Cache TTL for registry data (5 minutes)
+/// Balances freshness with network efficiency
+const CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Cached registry data with timestamp
+struct CachedRegistry {
+    servers: Vec<RegistryServer>,
+    fetched_at: Instant,
+}
+
+/// Global cache for the awesome-mcp registry
+static AWESOME_MCP_CACHE: OnceLock<RwLock<Option<CachedRegistry>>> = OnceLock::new();
+
+fn get_awesome_mcp_cache() -> &'static RwLock<Option<CachedRegistry>> {
+    AWESOME_MCP_CACHE.get_or_init(|| RwLock::new(None))
+}
 
 /// A registry server entry from external sources
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,19 +131,7 @@ pub async fn fetch_registry_servers(registry_id: &str) -> Result<Vec<RegistrySer
     match registry_id {
         "builtin" => Ok(get_builtin_servers()),
         "mcp-official" => Ok(get_official_servers()),
-        "awesome-mcp" => {
-            // Try to fetch live from GitHub, fall back to hardcoded list
-            match fetch_awesome_mcp_from_github().await {
-                Ok(servers) => {
-                    info!("Fetched {} servers from Awesome MCP GitHub", servers.len());
-                    Ok(servers)
-                }
-                Err(e) => {
-                    warn!("Failed to fetch from GitHub, using fallback: {}", e);
-                    Ok(get_awesome_mcp_servers_fallback())
-                }
-            }
-        }
+        "awesome-mcp" => fetch_awesome_mcp_cached().await,
         "smithery" => Ok(get_smithery_servers()),
         "glama" => Ok(get_glama_servers()),
         "mcp-get" => Ok(get_mcp_get_servers()),
@@ -131,10 +139,60 @@ pub async fn fetch_registry_servers(registry_id: &str) -> Result<Vec<RegistrySer
     }
 }
 
+/// Fetch awesome-mcp servers with caching
+async fn fetch_awesome_mcp_cached() -> Result<Vec<RegistryServer>, String> {
+    let cache = get_awesome_mcp_cache();
+
+    // Check if cache is valid
+    {
+        let cache_guard = cache.read().await;
+        if let Some(cached) = cache_guard.as_ref() {
+            if cached.fetched_at.elapsed() < CACHE_TTL {
+                info!("Returning {} cached awesome-mcp servers", cached.servers.len());
+                return Ok(cached.servers.clone());
+            }
+        }
+    } // Read lock released here
+
+    // Cache miss or expired - fetch fresh data
+    let result = fetch_awesome_mcp_from_github().await;
+
+    match result {
+        Ok(servers) => {
+            info!("Fetched {} servers from Awesome MCP GitHub (caching)", servers.len());
+
+            // Update cache
+            let mut cache_guard = cache.write().await;
+            *cache_guard = Some(CachedRegistry {
+                servers: servers.clone(),
+                fetched_at: Instant::now(),
+            });
+
+            Ok(servers)
+        }
+        Err(e) => {
+            warn!("Failed to fetch from GitHub, using fallback: {}", e);
+
+            // Try to return stale cache if available (better than fallback)
+            let cache_guard = cache.read().await;
+            if let Some(cached) = cache_guard.as_ref() {
+                warn!("Returning stale cache ({} servers)", cached.servers.len());
+                return Ok(cached.servers.clone());
+            }
+
+            // No cache at all, use hardcoded fallback
+            Ok(get_awesome_mcp_servers_fallback())
+        }
+    }
+}
+
 /// Fetch and parse the Awesome MCP Servers README from GitHub
 async fn fetch_awesome_mcp_from_github() -> Result<Vec<RegistryServer>, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // Security: Explicit TLS configuration
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .https_only(true) // Prevent HTTP downgrade attacks
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 

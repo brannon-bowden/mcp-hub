@@ -1,5 +1,5 @@
 use chrono::Utc;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;
@@ -14,6 +14,9 @@ use crate::services::{self, command_validation, config, custom_registry, discove
 
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 500;
+
+/// Maximum length of a single log message (prevents memory bloat from large messages)
+const MAX_MESSAGE_LENGTH: usize = 4096;
 
 /// A single log entry
 #[derive(Debug, Clone, serde::Serialize)]
@@ -39,10 +42,20 @@ impl LogBuffer {
         if self.entries.len() >= MAX_LOG_ENTRIES {
             self.entries.pop_front();
         }
+
+        // Truncate overly long messages to prevent memory bloat
+        let truncated_message = if message.len() > MAX_MESSAGE_LENGTH {
+            let mut truncated = message.chars().take(MAX_MESSAGE_LENGTH).collect::<String>();
+            truncated.push_str("... [truncated]");
+            truncated
+        } else {
+            message
+        };
+
         self.entries.push_back(LogEntry {
             timestamp: Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
             level: level.to_string(),
-            message,
+            message: truncated_message,
         });
     }
 
@@ -533,6 +546,76 @@ pub async fn get_registry_servers(
 
     // Existing built-in registry handling
     services::registry::fetch_registry_servers(&registry_id).await
+}
+
+/// Result of fetching from a single registry
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegistryFetchResult {
+    pub registry_id: String,
+    pub servers: Vec<services::registry::RegistryServer>,
+    pub error: Option<String>,
+}
+
+/// Fetch servers from multiple registries in parallel
+/// Returns results for all requested registries, with errors captured per-registry
+#[tauri::command]
+pub async fn get_multiple_registry_servers(
+    state: State<'_, AppState>,
+    registry_ids: Vec<String>,
+) -> Result<Vec<RegistryFetchResult>, String> {
+    use futures::future::join_all;
+
+    // Pre-fetch custom registry info from DB (scoped to release lock before async)
+    let custom_registries: HashMap<String, crate::db::CustomRegistry> = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.get_custom_registries()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect()
+    }; // Lock released here
+
+    // Create futures for all registry fetches
+    let fetch_futures: Vec<_> = registry_ids
+        .into_iter()
+        .map(|registry_id| {
+            let custom_registries = custom_registries.clone();
+
+            async move {
+                // Check if this is a custom registry (UUID format)
+                let result = if registry_id.contains('-') && registry_id.len() == 36 {
+                    // Custom registry - use cached data (already fetched)
+                    if let Some(custom_reg) = custom_registries.get(&registry_id) {
+                        if let Some(cached_data) = &custom_reg.cached_data {
+                            serde_json::from_str::<Vec<services::registry::RegistryServer>>(cached_data)
+                                .map_err(|e| format!("Failed to parse cached data: {}", e))
+                        } else {
+                            // No cache available - return empty with note
+                            // (Force refresh should be done via the single-registry endpoint)
+                            Err("No cached data available. Use refresh to fetch.".to_string())
+                        }
+                    } else {
+                        Err(format!("Custom registry not found: {}", registry_id))
+                    }
+                } else {
+                    // Built-in registry
+                    services::registry::fetch_registry_servers(&registry_id).await
+                };
+
+                RegistryFetchResult {
+                    registry_id,
+                    servers: result.clone().unwrap_or_default(),
+                    error: result.err(),
+                }
+            }
+        })
+        .collect();
+
+    // Execute all fetches in parallel
+    let results = join_all(fetch_futures).await;
+
+    Ok(results)
 }
 
 #[tauri::command]

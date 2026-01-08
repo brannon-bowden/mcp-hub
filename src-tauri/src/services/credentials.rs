@@ -1,10 +1,83 @@
 use keyring::Entry;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::sync::OnceLock;
 
 const SERVICE_NAME: &str = "mcp-hub";
+const INSTALLATION_SECRET_KEY: &str = "_mcp_hub_installation_secret";
+
+/// Per-installation secret for key obfuscation
+/// This is generated once per installation and stored in the keyring itself
+static INSTALLATION_SECRET: OnceLock<String> = OnceLock::new();
+
+/// Get or create the installation secret
+fn get_installation_secret() -> Result<String, String> {
+    // Try to get from cache first
+    if let Some(secret) = INSTALLATION_SECRET.get() {
+        return Ok(secret.clone());
+    }
+
+    // Try to retrieve from keyring
+    let entry = Entry::new(SERVICE_NAME, INSTALLATION_SECRET_KEY)
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+
+    match entry.get_password() {
+        Ok(secret) => {
+            let _ = INSTALLATION_SECRET.set(secret.clone());
+            Ok(secret)
+        }
+        Err(keyring::Error::NoEntry) => {
+            // Generate new secret
+            let secret = format!(
+                "{:x}{:x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                rand_u64()
+            );
+
+            // Store in keyring
+            entry
+                .set_password(&secret)
+                .map_err(|e| format!("Failed to store installation secret: {}", e))?;
+
+            let _ = INSTALLATION_SECRET.set(secret.clone());
+            Ok(secret)
+        }
+        Err(e) => Err(format!("Failed to retrieve installation secret: {}", e)),
+    }
+}
+
+/// Generate a pseudo-random u64 using system entropy
+fn rand_u64() -> u64 {
+    use std::collections::hash_map::RandomState;
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    std::time::Instant::now().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Derive an obfuscated key from a logical key
+/// This prevents credential enumeration by making keys unpredictable
+fn derive_storage_key(logical_key: &str) -> Result<String, String> {
+    let secret = get_installation_secret()?;
+
+    let mut hasher = DefaultHasher::new();
+    secret.hash(&mut hasher);
+    logical_key.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Use a prefix of the hash to keep keys reasonably short
+    // but long enough to prevent collisions
+    Ok(format!("k_{:016x}", hash))
+}
 
 /// Store a credential securely using the OS keyring
+/// Keys are obfuscated to prevent enumeration attacks
 pub fn store_credential(key: &str, value: &str) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, key)
+    let storage_key = derive_storage_key(key)?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
 
     entry
@@ -13,8 +86,10 @@ pub fn store_credential(key: &str, value: &str) -> Result<(), String> {
 }
 
 /// Retrieve a credential from the OS keyring
+/// Keys are obfuscated to prevent enumeration attacks
 pub fn get_credential(key: &str) -> Result<Option<String>, String> {
-    let entry = Entry::new(SERVICE_NAME, key)
+    let storage_key = derive_storage_key(key)?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
 
     match entry.get_password() {
@@ -25,8 +100,10 @@ pub fn get_credential(key: &str) -> Result<Option<String>, String> {
 }
 
 /// Delete a credential from the OS keyring
+/// Keys are obfuscated to prevent enumeration attacks
 pub fn delete_credential(key: &str) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, key)
+    let storage_key = derive_storage_key(key)?;
+    let entry = Entry::new(SERVICE_NAME, &storage_key)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
 
     match entry.delete_credential() {

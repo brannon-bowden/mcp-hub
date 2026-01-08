@@ -131,6 +131,7 @@ pub fn run() {
             // Registry
             commands::get_registries,
             commands::get_registry_servers,
+            commands::get_multiple_registry_servers,
             commands::import_from_registry,
             // Custom Registries
             commands::add_custom_registry,
