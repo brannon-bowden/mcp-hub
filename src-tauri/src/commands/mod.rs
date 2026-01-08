@@ -788,9 +788,18 @@ pub async fn update_discovery_settings(
     // Handle HTTP server changes
     let mut server_guard = state.discovery_server.write().await;
 
+    // Check if server config changed (port or auth token)
+    let server_config_changed = settings.http_server_port != old_settings.http_server_port
+        || settings.http_server_auth_token != old_settings.http_server_auth_token;
+
     if settings.http_server_enabled && !old_settings.http_server_enabled {
         // Enable: start server
-        let handle = discovery::start_discovery_server(settings.http_server_port, servers).await?;
+        let handle = discovery::start_discovery_server(
+            settings.http_server_port,
+            servers,
+            settings.http_server_auth_token.clone(),
+        )
+        .await?;
         *server_guard = Some(handle);
         log::info!("Discovery HTTP server started on port {}", settings.http_server_port);
     } else if !settings.http_server_enabled && old_settings.http_server_enabled {
@@ -799,12 +808,17 @@ pub async fn update_discovery_settings(
             handle.shutdown();
             log::info!("Discovery HTTP server stopped");
         }
-    } else if settings.http_server_enabled && old_settings.http_server_port != settings.http_server_port {
-        // Port changed: restart server
+    } else if settings.http_server_enabled && server_config_changed {
+        // Port or auth token changed: restart server
         if let Some(handle) = server_guard.take() {
             handle.shutdown();
         }
-        let handle = discovery::start_discovery_server(settings.http_server_port, servers).await?;
+        let handle = discovery::start_discovery_server(
+            settings.http_server_port,
+            servers,
+            settings.http_server_auth_token.clone(),
+        )
+        .await?;
         *server_guard = Some(handle);
         log::info!("Discovery HTTP server restarted on port {}", settings.http_server_port);
     }

@@ -10,6 +10,8 @@ use crate::models::{
     ClientInstance, ClientType, ConfigBackup, McpServer, ServerSource, SourceType,
 };
 
+pub mod migrations;
+
 /// A custom registry added by the user
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,129 +62,10 @@ impl Database {
     fn init_schema(&self) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        conn.execute_batch(
-            "
-            -- Central server registry
-            CREATE TABLE IF NOT EXISTS servers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                command TEXT NOT NULL,
-                args TEXT NOT NULL,
-                env TEXT NOT NULL,
-                tags TEXT,
-                source_type TEXT,
-                source_url TEXT,
-                parent_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (parent_id) REFERENCES servers(id) ON DELETE SET NULL
-            );
-
-            -- Client instances
-            CREATE TABLE IF NOT EXISTS client_instances (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                client_type TEXT NOT NULL,
-                config_path TEXT NOT NULL,
-                is_default INTEGER DEFAULT 0,
-                last_synced TEXT,
-                last_modified TEXT,
-                created_at TEXT NOT NULL
-            );
-
-            -- Server-to-instance mapping
-            CREATE TABLE IF NOT EXISTS instance_servers (
-                instance_id TEXT NOT NULL,
-                server_id TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
-                PRIMARY KEY (instance_id, server_id),
-                FOREIGN KEY (instance_id) REFERENCES client_instances(id) ON DELETE CASCADE,
-                FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
-            );
-
-            -- Config file backups
-            CREATE TABLE IF NOT EXISTS backups (
-                id TEXT PRIMARY KEY,
-                instance_id TEXT NOT NULL,
-                backup_path TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (instance_id) REFERENCES client_instances(id) ON DELETE CASCADE
-            );
-
-            -- App settings
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            -- Custom registries
-            CREATE TABLE IF NOT EXISTS custom_registries (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                url TEXT NOT NULL,
-                description TEXT,
-                icon TEXT,
-                requires_auth INTEGER NOT NULL DEFAULT 0,
-                cached_data TEXT,
-                cached_at TEXT,
-                created_at TEXT NOT NULL
-            );
-            ",
-        )?;
-
-        // Migration: Add last_modified column if it doesn't exist
-        // Check if column exists first
-        let has_last_modified: bool = {
-            let mut stmt = conn.prepare("PRAGMA table_info(client_instances)")?;
-            let columns: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            columns.contains(&"last_modified".to_string())
-        };
-
-        if !has_last_modified {
-            conn.execute("ALTER TABLE client_instances ADD COLUMN last_modified TEXT", [])?;
-        }
-
-        // Migration: Add parent_id column to servers if it doesn't exist
-        let has_parent_id: bool = {
-            let mut stmt = conn.prepare("PRAGMA table_info(servers)")?;
-            let columns: Vec<String> = stmt
-                .query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok())
-                .collect();
-            columns.contains(&"parent_id".to_string())
-        };
-
-        if !has_parent_id {
-            conn.execute("ALTER TABLE servers ADD COLUMN parent_id TEXT REFERENCES servers(id) ON DELETE SET NULL", [])?;
-        }
-
-        // Create indexes for better query performance
-        // Using IF NOT EXISTS to make migrations idempotent
-        conn.execute_batch(
-            "
-            -- Index for server lookups by name (case-insensitive searches)
-            CREATE INDEX IF NOT EXISTS idx_servers_name ON servers(name);
-
-            -- Index for filtering servers by source type
-            CREATE INDEX IF NOT EXISTS idx_servers_source_type ON servers(source_type);
-
-            -- Index for filtering client instances by type
-            CREATE INDEX IF NOT EXISTS idx_client_instances_type ON client_instances(client_type);
-
-            -- Index for backup lookups by instance
-            CREATE INDEX IF NOT EXISTS idx_backups_instance ON backups(instance_id);
-
-            -- Index for instance_servers foreign key lookups
-            CREATE INDEX IF NOT EXISTS idx_instance_servers_server ON instance_servers(server_id);
-
-            -- Index for custom registry lookups by name
-            CREATE INDEX IF NOT EXISTS idx_custom_registries_name ON custom_registries(name);
-            "
-        )?;
+        // Run all pending migrations using the versioned migration system
+        // This replaces the previous inline schema creation with a proper
+        // migration system that tracks schema versions
+        migrations::run_migrations(&conn)?;
 
         Ok(())
     }
