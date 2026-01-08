@@ -37,3 +37,4 @@ futures = "0.3"
 async-stream = "0.3"
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 url = "2"
+fs2 = "0.4"

@@ -356,6 +356,9 @@ pub struct DiscoverySettings {
     pub http_server_enabled: bool,
     /// Port for the local HTTP server (default: 24368)
     pub http_server_port: u16,
+    /// Optional Bearer token for HTTP server authentication (None = no auth required)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_server_auth_token: Option<String>,
 }
 
 impl Default for DiscoverySettings {
@@ -364,6 +367,7 @@ impl Default for DiscoverySettings {
             mcp_directory_enabled: false,
             http_server_enabled: false,
             http_server_port: 24368,
+            http_server_auth_token: None,
         }
     }
 }

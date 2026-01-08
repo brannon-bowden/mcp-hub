@@ -6,19 +6,195 @@
 
 use crate::models::McpServer;
 use axum::{
+    extract::ConnectInfo,
     http::{header, Method, StatusCode},
-    response::{IntoResponse, Json},
+    middleware::{self, Next},
+    response::{IntoResponse, Json, Response},
     routing::get,
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
+
+// ==================== Rate Limiting ====================
+
+/// Rate limiter configuration
+const RATE_LIMIT_MAX_REQUESTS: usize = 100;
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
+/// Request timestamps for rate limiting
+struct RequestLog {
+    timestamps: Vec<Instant>,
+}
+
+impl RequestLog {
+    fn new() -> Self {
+        Self {
+            timestamps: Vec::new(),
+        }
+    }
+
+    /// Clean up old timestamps and return current count
+    fn count_within_window(&mut self, window: Duration) -> usize {
+        let now = Instant::now();
+        self.timestamps.retain(|&t| now.duration_since(t) < window);
+        self.timestamps.len()
+    }
+
+    /// Add a new request timestamp
+    fn add_request(&mut self) {
+        self.timestamps.push(Instant::now());
+    }
+}
+
+/// Rate limiter state shared across requests
+pub struct RateLimiter {
+    requests: Mutex<HashMap<IpAddr, RequestLog>>,
+    max_requests: usize,
+    window: Duration,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter
+    pub fn new(max_requests: usize, window_secs: u64) -> Self {
+        Self {
+            requests: Mutex::new(HashMap::new()),
+            max_requests,
+            window: Duration::from_secs(window_secs),
+        }
+    }
+
+    /// Check if a request from the given IP should be allowed
+    /// Returns Ok(()) if allowed, Err(remaining_time) if rate limited
+    pub async fn check_rate_limit(&self, ip: IpAddr) -> Result<(), Duration> {
+        let mut requests = self.requests.lock().await;
+        let log = requests.entry(ip).or_insert_with(RequestLog::new);
+
+        let count = log.count_within_window(self.window);
+
+        if count >= self.max_requests {
+            // Calculate retry-after time (approximate)
+            let oldest = log.timestamps.first().copied().unwrap_or_else(Instant::now);
+            let retry_after = self.window.saturating_sub(Instant::now().duration_since(oldest));
+            return Err(retry_after);
+        }
+
+        log.add_request();
+        Ok(())
+    }
+
+    /// Periodically clean up stale entries (call every few minutes)
+    #[allow(dead_code)]
+    pub async fn cleanup(&self) {
+        let mut requests = self.requests.lock().await;
+        let window = self.window;
+        requests.retain(|_, log| {
+            log.count_within_window(window) > 0
+        });
+    }
+}
+
+/// Axum middleware for rate limiting
+async fn rate_limit_middleware(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    axum::extract::State(limiter): axum::extract::State<Arc<RateLimiter>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let ip = addr.ip();
+
+    match limiter.check_rate_limit(ip).await {
+        Ok(()) => next.run(request).await,
+        Err(retry_after) => {
+            let retry_secs = retry_after.as_secs().max(1);
+            log::warn!(
+                "Rate limit exceeded for {} - retry after {} seconds",
+                ip,
+                retry_secs
+            );
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [
+                    (header::RETRY_AFTER, retry_secs.to_string()),
+                    (header::CONTENT_TYPE, "text/plain".to_string()),
+                ],
+                format!(
+                    "Rate limit exceeded. Please retry after {} seconds.",
+                    retry_secs
+                ),
+            )
+                .into_response()
+        }
+    }
+}
+
+// ==================== Authentication ====================
+
+/// Authentication configuration - None means no auth required (public access)
+#[derive(Clone)]
+pub struct AuthConfig {
+    /// Bearer token required for access (None = no authentication)
+    token: Option<String>,
+}
+
+impl AuthConfig {
+    /// Create config with no authentication (public access)
+    pub fn none() -> Self {
+        Self { token: None }
+    }
+
+    /// Create config with Bearer token authentication
+    pub fn with_token(token: String) -> Self {
+        Self { token: Some(token) }
+    }
+
+    /// Check if a request is authenticated
+    fn is_authenticated(&self, auth_header: Option<&str>) -> bool {
+        match &self.token {
+            None => true, // No auth required
+            Some(expected_token) => {
+                auth_header
+                    .and_then(|h| h.strip_prefix("Bearer "))
+                    .map(|t| t == expected_token)
+                    .unwrap_or(false)
+            }
+        }
+    }
+}
+
+/// Axum middleware for Bearer token authentication
+async fn auth_middleware(
+    axum::extract::State(auth_config): axum::extract::State<AuthConfig>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let auth_header = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    if auth_config.is_authenticated(auth_header) {
+        next.run(request).await
+    } else {
+        log::warn!("Unauthorized access attempt to discovery server");
+        (
+            StatusCode::UNAUTHORIZED,
+            [
+                (header::WWW_AUTHENTICATE, "Bearer".to_string()),
+                (header::CONTENT_TYPE, "text/plain".to_string()),
+            ],
+            "Unauthorized. Please provide a valid Bearer token.",
+        )
+            .into_response()
+    }
+}
 
 /// MCP Server Card format (SEP-1649 compatible)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,19 +498,36 @@ async fn root_handler() -> impl IntoResponse {
     )
 }
 
-/// Create the HTTP server router
-fn create_router(state: Arc<DiscoveryState>) -> Router {
+/// Create the HTTP server router with rate limiting and optional authentication
+fn create_router(
+    state: Arc<DiscoveryState>,
+    rate_limiter: Arc<RateLimiter>,
+    auth_config: AuthConfig,
+) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::AUTHORIZATION]);
 
-    Router::new()
+    // Routes that need rate limiting and authentication
+    // Authentication is applied first (innermost), then rate limiting
+    let protected_routes = Router::new()
         .route("/", get(root_handler))
-        .route("/health", get(health_handler))
         .route("/.well-known/mcp.json", get(well_known_mcp_handler))
-        .layer(cors)
-        .with_state(state)
+        .route_layer(middleware::from_fn_with_state(
+            auth_config.clone(),
+            auth_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            rate_limit_middleware,
+        ))
+        .with_state(state);
+
+    // Health check is exempt from rate limiting and authentication (for monitoring)
+    let health_route = Router::new().route("/health", get(health_handler));
+
+    protected_routes.merge(health_route).layer(cors)
 }
 
 /// Discovery server handle for controlling the server
@@ -359,15 +552,39 @@ impl DiscoveryServerHandle {
 }
 
 /// Start the discovery HTTP server
+///
+/// # Arguments
+/// * `port` - Port number to bind to (localhost only)
+/// * `initial_servers` - Initial list of MCP servers to expose
+/// * `auth_token` - Optional Bearer token for authentication. If None, no auth is required.
 pub async fn start_discovery_server(
     port: u16,
     initial_servers: Vec<McpServer>,
+    auth_token: Option<String>,
 ) -> Result<DiscoveryServerHandle, String> {
     let state = Arc::new(DiscoveryState {
         servers: RwLock::new(initial_servers),
     });
 
-    let router = create_router(state.clone());
+    // Create rate limiter (100 requests per 60 seconds per IP)
+    let rate_limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_MAX_REQUESTS,
+        RATE_LIMIT_WINDOW_SECS,
+    ));
+
+    // Create auth config (optional authentication)
+    let auth_config = match auth_token {
+        Some(token) => {
+            log::info!("Discovery server authentication enabled");
+            AuthConfig::with_token(token)
+        }
+        None => {
+            log::info!("Discovery server running without authentication");
+            AuthConfig::none()
+        }
+    };
+
+    let router = create_router(state.clone(), rate_limiter, auth_config);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -378,12 +595,16 @@ pub async fn start_discovery_server(
 
     let server_state = state.clone();
     tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .ok();
+        // Use into_make_service_with_connect_info to provide client IP to middleware
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .ok();
     });
 
     log::info!("Discovery server started on http://127.0.0.1:{}", port);

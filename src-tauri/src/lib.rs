@@ -70,6 +70,7 @@ pub fn run() {
                     match services::discovery::start_discovery_server(
                         settings.discovery.http_server_port,
                         servers,
+                        settings.discovery.http_server_auth_token.clone(),
                     )
                     .await
                     {

@@ -3,7 +3,60 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
+
 use crate::models::{ClientInstance, ClientType, McpConfigFile, McpServer, McpServerEntry};
+
+/// Timeout for acquiring file locks (in seconds)
+const FILE_LOCK_TIMEOUT_SECS: u64 = 10;
+
+/// Execute a function while holding an exclusive lock on a file.
+/// Creates a .lock file adjacent to the target file to coordinate access.
+/// Returns the result of the function, or an error if the lock cannot be acquired.
+fn with_file_lock<T, F>(path: &Path, f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    // Create lock file path
+    let lock_path = path.with_extension("lock");
+
+    // Ensure parent directory exists for lock file
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create lock file directory: {}", e))?;
+    }
+
+    // Open or create the lock file
+    let lock_file = File::create(&lock_path)
+        .map_err(|e| format!("Failed to create lock file: {}", e))?;
+
+    // Try to acquire exclusive lock with timeout
+    let start = std::time::Instant::now();
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(_) => break,
+            Err(_) if start.elapsed().as_secs() >= FILE_LOCK_TIMEOUT_SECS => {
+                return Err(format!(
+                    "Timeout waiting for file lock on {}. Another process may be modifying this file.",
+                    path.display()
+                ));
+            }
+            Err(_) => {
+                // Wait a bit before retrying
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+
+    // Execute the function while holding the lock
+    let result = f();
+
+    // Lock is automatically released when lock_file is dropped
+    // Attempt to clean up lock file (ignore errors - it's just cleanup)
+    let _ = fs::remove_file(&lock_path);
+
+    result
+}
 
 /// Validate a path to prevent path traversal attacks
 ///
@@ -660,6 +713,9 @@ pub fn write_config_file(path: &PathBuf, config: &McpConfigFile) -> Result<(), S
 
 /// Write MCP servers to a config file, preserving other fields in the file
 /// This is used for config files like ~/.claude.json that contain other settings
+///
+/// Uses file locking to prevent race conditions when multiple processes
+/// attempt to modify the same config file concurrently.
 pub fn write_mcp_servers_preserving_config(
     path: &PathBuf,
     mcp_servers: &HashMap<String, McpServerEntry>,
@@ -667,39 +723,46 @@ pub fn write_mcp_servers_preserving_config(
     // Validate path to prevent path traversal attacks
     let validated_path = validate_path_security(path)?;
 
-    // Ensure parent directory exists
+    // Ensure parent directory exists (before acquiring lock)
     if let Some(parent) = validated_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    // Read existing content or start with empty object
-    let mut existing: serde_json::Value = if validated_path.exists() {
-        let content = fs::read_to_string(&validated_path)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-        if content.trim().is_empty() {
-            serde_json::json!({})
+    // Clone for use in closure (borrow checker requires separate ownership)
+    let servers_clone = mcp_servers.clone();
+    let path_clone = validated_path.clone();
+
+    // Wrap the read-modify-write operation in a file lock to prevent race conditions
+    with_file_lock(&validated_path, move || {
+        // Read existing content or start with empty object
+        let mut existing: serde_json::Value = if path_clone.exists() {
+            let content = fs::read_to_string(&path_clone)
+                .map_err(|e| format!("Failed to read config file: {}", e))?;
+            if content.trim().is_empty() {
+                serde_json::json!({})
+            } else {
+                serde_json::from_str(&content)
+                    .map_err(|e| format!("Failed to parse config file: {}", e))?
+            }
         } else {
-            serde_json::from_str(&content)
-                .map_err(|e| format!("Failed to parse config file: {}", e))?
-        }
-    } else {
-        serde_json::json!({})
-    };
+            serde_json::json!({})
+        };
 
-    // Ensure we have an object at the root
-    let obj = existing.as_object_mut()
-        .ok_or_else(|| "Config file is not a JSON object".to_string())?;
+        // Ensure we have an object at the root
+        let obj = existing.as_object_mut()
+            .ok_or_else(|| "Config file is not a JSON object".to_string())?;
 
-    // Update only the mcpServers field
-    let servers_value = serde_json::to_value(mcp_servers)
-        .map_err(|e| format!("Failed to serialize MCP servers: {}", e))?;
-    obj.insert("mcpServers".to_string(), servers_value);
+        // Update only the mcpServers field
+        let servers_value = serde_json::to_value(&servers_clone)
+            .map_err(|e| format!("Failed to serialize MCP servers: {}", e))?;
+        obj.insert("mcpServers".to_string(), servers_value);
 
-    // Write back the merged config
-    let content = serde_json::to_string_pretty(&existing)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        // Write back the merged config
+        let content = serde_json::to_string_pretty(&existing)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    atomic_write(&validated_path, &content)
+        atomic_write(&path_clone, &content)
+    })
 }
 
 /// Create a backup of a config file
