@@ -10,7 +10,7 @@ use crate::models::{
     AppSettings, ClientInstance, ClientType, ConfigBackup, DiscoverySettings, McpServer,
     ServerHealth, HealthStatus,
 };
-use crate::services::{self, config, custom_registry, discovery};
+use crate::services::{self, command_validation, config, custom_registry, discovery};
 
 /// Maximum number of log entries to keep in memory
 const MAX_LOG_ENTRIES: usize = 500;
@@ -101,6 +101,9 @@ pub fn get_server(state: State<AppState>, id: String) -> Result<Option<McpServer
 
 #[tauri::command]
 pub fn create_server(state: State<AppState>, server: McpServer) -> Result<McpServer, String> {
+    // Validate command before creating
+    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)?;
+
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.create_server(&server).map_err(|e| e.to_string())?;
     Ok(server)
@@ -108,6 +111,9 @@ pub fn create_server(state: State<AppState>, server: McpServer) -> Result<McpSer
 
 #[tauri::command]
 pub fn update_server(state: State<AppState>, server: McpServer) -> Result<McpServer, String> {
+    // Validate command before updating
+    command_validation::validate_mcp_command(&server.command, &server.args, &server.env)?;
+
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.update_server(&server).map_err(|e| e.to_string())?;
     Ok(server)
@@ -290,10 +296,15 @@ pub fn import_from_file(state: State<AppState>, path: String) -> Result<Vec<McpS
         .map(|s| s.name.to_lowercase())
         .collect();
 
-    // Only import servers that don't already exist
+    // Only import servers that don't already exist and pass validation
     let mut imported = Vec::new();
     for server in servers {
         if !existing_names.contains(&server.name.to_lowercase()) {
+            // Validate command before importing
+            if let Err(e) = command_validation::validate_mcp_command(&server.command, &server.args, &server.env) {
+                log::warn!("Skipping import of server '{}': {}", server.name, e);
+                continue;
+            }
             db.create_server(&server).map_err(|e| e.to_string())?;
             imported.push(server);
         }
@@ -398,6 +409,19 @@ pub fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<()
 pub async fn check_server_health(server: McpServer) -> Result<ServerHealth, String> {
     use std::process::Command;
     use std::time::Duration;
+
+    // Validate command before executing (security check)
+    if !command_validation::is_command_allowed(&server.command) {
+        return Ok(ServerHealth {
+            server_id: server.id,
+            status: HealthStatus::Error,
+            error_message: Some(format!(
+                "Command '{}' is not in the allowed list for security reasons",
+                server.command
+            )),
+            last_checked: Utc::now(),
+        });
+    }
 
     // Try to run the command with --version or --help to check if it exists
     let result = tokio::time::timeout(Duration::from_secs(5), async {
@@ -526,11 +550,16 @@ pub fn import_from_registry(
         .map(|s| s.name.to_lowercase())
         .collect();
 
-    // Only import servers that don't already exist
+    // Only import servers that don't already exist and pass validation
     let mut imported = Vec::new();
     for registry_server in servers {
         let server = services::registry::registry_server_to_mcp_server(&registry_server, &registry_id);
         if !existing_names.contains(&server.name.to_lowercase()) {
+            // Validate command before importing
+            if let Err(e) = command_validation::validate_mcp_command(&server.command, &server.args, &server.env) {
+                log::warn!("Skipping import of server '{}' from registry: {}", server.name, e);
+                continue;
+            }
             db.create_server(&server).map_err(|e| e.to_string())?;
             imported.push(server);
         }
