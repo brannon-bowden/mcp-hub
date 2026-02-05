@@ -1,6 +1,6 @@
 [package]
 name = "mcp-hub"
-version = "0.1.24"
+version = "0.1.25"
 description = "MCP Server Manager - Centralized management for Model Context Protocol servers"
 authors = ["MCP Hub Team"]
 edition = "2021"
