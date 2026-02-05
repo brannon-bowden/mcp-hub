@@ -11,8 +11,6 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-use super::app_dirs::get_app_data_dir;
-
 /// Timeout for acquiring file locks (in seconds)
 const FILE_LOCK_TIMEOUT_SECS: u64 = 10;
 
@@ -64,59 +62,43 @@ where
     result
 }
 
-/// Validate a path to prevent path traversal attacks
+/// Validate a path to prevent access to sensitive files
 ///
 /// This function ensures that:
-/// 1. The path can be canonicalized (resolves symlinks, normalizes . and ..)
-/// 2. The resulting path is within an allowed directory (home or app data)
-/// 3. The path doesn't escape the allowed directories through symlinks
+/// 1. The path doesn't contain directory traversal sequences (..)
+/// 2. The path doesn't point to sensitive system files (SSH keys, credentials, etc.)
+///
+/// Note: Config paths come from trusted sources (database, hard-coded client defaults),
+/// so we don't restrict to specific directories. The traversal and sensitive file
+/// checks provide sufficient protection.
 pub fn validate_path_security(path: &Path) -> Result<PathBuf, String> {
-    // Get allowed base directories
-    let home_dir = dirs::home_dir()
-        .ok_or_else(|| "Cannot determine home directory".to_string())?;
-    let app_data_dir = get_app_data_dir()
-        .ok_or_else(|| "Cannot determine app data directory".to_string())?;
-
-    // For paths that don't exist yet, we need to check the parent
-    let path_to_check = if path.exists() {
-        path.to_path_buf()
-    } else {
-        // Check if parent exists and is valid
-        path.parent()
-            .ok_or_else(|| "Invalid path: no parent directory".to_string())?
-            .to_path_buf()
-    };
-
-    // Canonicalize to resolve symlinks and normalize the path
-    let canonical = if path_to_check.exists() {
-        path_to_check
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve path: {}", e))?
-    } else {
-        // If path doesn't exist, ensure it's at least within home directory
-        // by checking the non-existing path doesn't contain traversal
-        let path_str = path.to_string_lossy();
-        if path_str.contains("..") {
-            return Err("Path contains directory traversal sequences".to_string());
-        }
-        // Return the original path if we can't canonicalize
-        path.to_path_buf()
-    };
-
-    // Check if path is within allowed directories
-    let canonical_str = canonical.to_string_lossy().to_string();
-    let home_str = home_dir.to_string_lossy().to_string();
-    let app_data_str = app_data_dir.to_string_lossy().to_string();
-
-    // The path must start with either home or app data directory
-    if !canonical_str.starts_with(&home_str) && !canonical_str.starts_with(&app_data_str) {
-        return Err(format!(
-            "Path '{}' is outside allowed directories (home: {}, app data: {})",
-            path.display(),
-            home_dir.display(),
-            app_data_dir.display()
-        ));
+    // Check for directory traversal sequences
+    let path_str = path.to_string_lossy();
+    if path_str.contains("..") {
+        return Err("Path contains directory traversal sequences".to_string());
     }
+
+    // Canonicalize if the path exists to resolve symlinks
+    let canonical = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {}", e))?
+    } else if let Some(parent) = path.parent() {
+        // If parent exists, canonicalize it and append the filename
+        if parent.exists() {
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve parent path: {}", e))?;
+            canonical_parent.join(path.file_name().unwrap_or_default())
+        } else {
+            path.to_path_buf()
+        }
+    } else {
+        path.to_path_buf()
+    };
+
+    // For sensitive pattern checking, use string comparison
+    // Normalize separators for cross-platform matching
+    let canonical_str = canonical.to_string_lossy().replace('\\', "/");
 
     // Additional safety: block access to sensitive system files even within home
     let sensitive_patterns = [
